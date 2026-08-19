@@ -128,7 +128,7 @@ VESC_Servo_SetTelemetryCallback(g_servo, OnTelemetry);
 
 ## Установка
 
-Скопируйте `vesc_servo.h` и `vesc_servo.c` в проект рядом с `motor_vesc.h` `motor_vesc.c` и добавьте оба `.c` файла в сборку.
+Скопируйте `vesc_servo.h` и `vesc_servo.c` в проект рядом с `motor_vesc.h` и `motor_vesc.c` и добавьте оба `.c` файла в сборку.
 
 ## Быстрый старт
 
@@ -189,7 +189,7 @@ void OnNewTargetComputed(float target_deg)
     {
         VESC_Servo_SetPosition(g_servo, target_deg);
         /* либо, если удобнее в диапазоне -1..1 относительно рабочего диапазона: */
-        /* c */
+        /* VESC_Servo_SetPositionNormalized(g_servo, joystick_value); */
     }
 }
 
@@ -211,7 +211,7 @@ void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxCo
 void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
 ```
 
-Более подробный, аннотированный пример (в т.ч. свой колбэк телеметрии и нормализованное управление) - см. [`servo_vesc_example.c`](./servo_vesc_example.c).
+Более подробный, аннотированный пример (в т.ч. свой колбэк телеметрии и нормализованное управление) - см. [`vesc_servo_example.c`](./vesc_servo_example.c).
 
 ## Жизненный цикл состояния
 
