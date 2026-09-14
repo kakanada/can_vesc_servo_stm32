@@ -87,6 +87,9 @@ void VESC_Servo_Example_Setup(void)
     /* Убедитесь, что STATUS_4 в VESC Tool (App Settings -> General -> CAN
      * Status Message Rate) идёт достаточно часто под эти max_speed_deg_s -
      * см. формулу в комментарии над max_speed_deg_s в vesc_servo.h. */
+    servo_cfg.max_step_dt_ms = 100U; /* разрыв в приходе STATUS_4 длиннее этого
+                                       * считаем сбоем связи, а не обычным тиком -
+                                       * см. max_step_dt_ms в vesc_servo.h */
 
     servo_cfg.pid_kp   = 2.0f;
     servo_cfg.pid_ki   = 0.5f;

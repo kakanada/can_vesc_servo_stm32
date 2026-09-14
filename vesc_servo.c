@@ -335,6 +335,25 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
         return; /* коррекция не активна - профиль/ПИД не считаем вовсе */
     }
 
+    /* Аномально большой разрыв между приходами STATUS_4 (затор на шине,
+     * помеха и т.п. - см. max_step_dt_ms в vesc_servo.h). Используя такой dt_s
+     * напрямую ниже, мы бы фактически сняли ограничение max_accel_deg_s2 на
+     * этот шаг (допустимое приращение скорости max_dv = max_accel_deg_s2*dt_s
+     * растёт вместе с dt_s) - профиль скачком перешёл бы к предельной
+     * скорости вместо плавного разгона. Вместо этого пересинхронизируем
+     * профиль с фактической позицией (как при старте новой коррекции) и
+     * пропускаем сам шаг - штатный по длительности следующий тик продолжит
+     * разгон уже нормально, без скачка команды. */
+    if (dt_s > ((float)s->cfg.max_step_dt_ms / 1000.0f))
+    {
+        s->profile_pos_deg   = actual;
+        s->profile_vel_deg_s = 0.0f;
+        s->pid_integral        = 0.0f;
+        s->has_last_error      = 0U;
+        vesc_servo_send_motor_speed(s, 0.0f);
+        return;
+    }
+
     /* --- 1. Трапецеидальный профиль --- */
     float max_v = s->cfg.max_speed_deg_s;
     float max_a = s->cfg.max_accel_deg_s2;
@@ -561,6 +580,7 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
 
     if (s->cfg.telemetry_timeout_ms == 0U) { s->cfg.telemetry_timeout_ms = 200U;   }
     if (s->cfg.homing_timeout_ms == 0U)     { s->cfg.homing_timeout_ms = 15000U;  }
+    if (s->cfg.max_step_dt_ms == 0U)        { s->cfg.max_step_dt_ms = 100U;       }
 
     s->used         = 1U;
     s->state        = VESC_SERVO_STATE_DISABLED;
