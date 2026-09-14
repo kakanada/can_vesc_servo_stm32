@@ -388,9 +388,18 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
     /* --- 2. ПИД коррекции ошибки слежения за профилем --- */
     float error = s->profile_pos_deg - actual;
 
+    /* Анти-виндап клэмпит не сам интеграл (град*с), а его ВКЛАД В КОМАНДУ
+     * (pid_ki * pid_integral, град/с) - именно так задокументирован
+     * pid_i_max в vesc_servo.h. При pid_ki == 0.0f знаменатель обнуляется,
+     * а с ним и деление даёт +inf (pid_i_max провалидирован > 0 в
+     * VESC_Servo_Init) - клэмп корректно превращается в "не ограничивать
+     * интеграл вовсе", т.к. при ki == 0 сам интеграл на команду и так не
+     * влияет. */
+    float pid_integral_max = s->cfg.pid_i_max / fabsf(s->cfg.pid_ki);
+
     s->pid_integral += error * dt_s;
-    if (s->pid_integral >  s->cfg.pid_i_max) { s->pid_integral =  s->cfg.pid_i_max; }
-    if (s->pid_integral < -s->cfg.pid_i_max) { s->pid_integral = -s->cfg.pid_i_max; }
+    if (s->pid_integral >  pid_integral_max) { s->pid_integral =  pid_integral_max; }
+    if (s->pid_integral < -pid_integral_max) { s->pid_integral = -pid_integral_max; }
 
     float derr = s->has_last_error ? ((error - s->last_error_deg) / dt_s) : 0.0f;
     s->last_error_deg = error;
@@ -801,6 +810,15 @@ HAL_StatusTypeDef VESC_Servo_Enable(VESC_Servo_Handle_t *s)
     if (s->state == VESC_SERVO_STATE_READY)
     {
         return HAL_OK; /* уже включена */
+    }
+    if (!VESC_CAN_IsAlive(s->vesc, s->cfg.telemetry_timeout_ms))
+    {
+        return HAL_ERROR; /* без свежей телеметрии неизвестна текущая факт. позиция -
+                            * включать контур по ней вслепую небезопасно (см. ту же
+                            * проверку в VESC_Servo_StartHoming()); актуально в первую
+                            * очередь для выхода из VESC_SERVO_STATE_FAULT, вызванного
+                            * VESC_Servo_CheckAlive() - без этой проверки Enable() мог
+                            * бы молча вернуть серву в READY при всё ещё мёртвой связи */
     }
 
     float actual = vesc_servo_output_deg(s);

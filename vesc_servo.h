@@ -763,11 +763,19 @@ HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float ac
  * @brief  Включает контур позиции после VESC_Servo_Disable() БЕЗ повторного
  *         хоуминга - продолжает от текущей фактической позиции (профиль и
  *         цель сбрасываются на неё же, рывка не будет; коррекция изначально
- *         не активна, т.к. ошибка на этот момент равна 0).
+ *         не активна, т.к. ошибка на этот момент равна 0). Также служит
+ *         способом выйти из VESC_SERVO_STATE_FAULT, если он был вызван
+ *         VESC_Servo_CheckAlive() (полная потеря связи), а не провалом
+ *         хоуминга - при условии, что телеметрия к моменту вызова уже снова
+ *         свежая (см. @retval ниже).
  * @param  s  хэндл сервы
- * @retval HAL_OK; HAL_ERROR если s == NULL, либо хоуминг/калибровка ни разу
- *         не выполнялись (VESC_Servo_IsHomed() == 0) - в этом случае нужен
- *         VESC_Servo_StartHoming() или VESC_Servo_SetCurrentPosition().
+ * @retval HAL_OK; HAL_ERROR если s == NULL, хоуминг/калибровка ни разу не
+ *         выполнялись (VESC_Servo_IsHomed() == 0 - в этом случае нужен
+ *         VESC_Servo_StartHoming() или VESC_Servo_SetCurrentPosition()),
+ *         либо телеметрия вески сейчас не свежая (см. VESC_CAN_IsAlive()/
+ *         telemetry_timeout_ms) - включать контур позиции, не видя текущий
+ *         факт. угол, небезопасно (та же логика, что и у
+ *         VESC_Servo_StartHoming()).
  */
 HAL_StatusTypeDef VESC_Servo_Enable(VESC_Servo_Handle_t *s);
 
