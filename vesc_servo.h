@@ -610,6 +610,17 @@ struct VESC_Servo_Handle_s
     uint8_t              used;
     VESC_Servo_Config_t  cfg;
 
+    /* Кэш величин, производных от cfg (которая не меняется после
+     * VESC_Servo_Init() - сеттера для неё нет) - посчитаны один раз при
+     * инициализации, чтобы в горячем пути (вызывается на каждый приход
+     * STATUS_4, из ISR) не повторять одно и то же деление на каждом тике.
+     * См. их использование в vesc_servo.c. */
+    float     inv_gear_ratio;      /* 1 / cfg.gear_ratio */
+    float     motor_rpm_per_deg_s; /* cfg.gear_ratio / 6 */
+    float     inv_2_max_accel;     /* 1 / (2 * cfg.max_accel_deg_s2) */
+    float     pid_integral_max;    /* cfg.pid_i_max / |cfg.pid_ki| */
+    float     max_step_dt_s;       /* cfg.max_step_dt_ms / 1000 */
+
     VESC_Servo_TelemetryCallback_t telemetry_callback; /* см. VESC_Servo_SetTelemetryCallback, NULL по умолчанию */
 
     uint8_t   wrap_initialized;     /* было ли уже первое чтение pid_pos          */
@@ -656,6 +667,8 @@ struct VESC_Servo_Handle_s
  * @retval указатель на VESC_Servo_Handle_t (используйте во всех остальных
  *         вызовах), либо NULL при ошибке конфигурации:
  *           - config == NULL;
+ *           - любое из числовых полей конфига (все float-поля
+ *             VESC_Servo_Config_t) - NaN или Inf;
  *           - не удалось зарегистрировать веску (см. VESC_CAN_Init() в
  *             motor_vesc.h: hcan == NULL, pole_count == 0 либо нечётный,
  *             исчерпаны внутренние пулы motor_vesc, ошибка периферии);

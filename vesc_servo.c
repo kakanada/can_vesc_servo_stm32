@@ -76,7 +76,7 @@ static uint8_t vesc_servo_read_limit(const VESC_Servo_Handle_t *s)
  *  чтобы не разойтись между разными местами кода. */
 static float vesc_servo_output_deg(const VESC_Servo_Handle_t *s)
 {
-    return (s->motor_unwrapped_deg / s->cfg.gear_ratio) + s->output_offset_deg;
+    return (s->motor_unwrapped_deg * s->inv_gear_ratio) + s->output_offset_deg;
 }
 
 /** Отправляет на веску целевую МЕХАНИЧЕСКУЮ скорость мотора, эквивалентную
@@ -85,7 +85,7 @@ static float vesc_servo_output_deg(const VESC_Servo_Handle_t *s)
  *  360°/об, 60 с/мин -> RPM = (deg_s / 6) - смотри вывод в шапке файла. */
 static void vesc_servo_send_motor_speed(const VESC_Servo_Handle_t *s, float output_deg_s)
 {
-    float motor_rpm = (output_deg_s * s->cfg.gear_ratio) / 6.0f;
+    float motor_rpm = output_deg_s * s->motor_rpm_per_deg_s;
     VESC_CAN_SendMechanicalSpeed(s->vesc, motor_rpm);
 }
 
@@ -243,7 +243,7 @@ static void vesc_servo_homing_finish(VESC_Servo_Handle_t *s)
 {
     vesc_servo_stop_motor(s);
 
-    s->output_offset_deg = s->cfg.home_position_deg - (s->motor_unwrapped_deg / s->cfg.gear_ratio);
+    s->output_offset_deg = s->cfg.home_position_deg - (s->motor_unwrapped_deg * s->inv_gear_ratio);
 
     s->target_deg = vesc_servo_clamp_to_limits(s, s->cfg.home_position_deg);
     s->moving      = 0U;
@@ -399,7 +399,7 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
     float max_a = s->cfg.max_accel_deg_s2;
     float to_go = s->target_deg - s->profile_pos_deg;
 
-    float stopping_dist = (s->profile_vel_deg_s * s->profile_vel_deg_s) / (2.0f * max_a);
+    float stopping_dist = (s->profile_vel_deg_s * s->profile_vel_deg_s) * s->inv_2_max_accel;
     float desired_v;
     if (fabsf(to_go) <= stopping_dist)
     {
@@ -430,16 +430,15 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
 
     /* Анти-виндап клэмпит не сам интеграл (град*с), а его ВКЛАД В КОМАНДУ
      * (pid_ki * pid_integral, град/с) - именно так задокументирован
-     * pid_i_max в vesc_servo.h. При pid_ki == 0.0f знаменатель обнуляется,
-     * а с ним и деление даёт +inf (pid_i_max провалидирован > 0 в
-     * VESC_Servo_Init) - клэмп корректно превращается в "не ограничивать
-     * интеграл вовсе", т.к. при ki == 0 сам интеграл на команду и так не
-     * влияет. */
-    float pid_integral_max = s->cfg.pid_i_max / fabsf(s->cfg.pid_ki);
-
+     * pid_i_max в vesc_servo.h. s->pid_integral_max = pid_i_max/|pid_ki|
+     * посчитан один раз в VESC_Servo_Init() (см. кэш производных величин в
+     * .h) - при pid_ki == 0.0f там же корректно получился +inf (деление
+     * положительного pid_i_max на 0.0f), клэмп превращается в "не
+     * ограничивать интеграл вовсе", т.к. при ki == 0 сам интеграл на
+     * команду и так не влияет. */
     s->pid_integral += error * dt_s;
-    if (s->pid_integral >  pid_integral_max) { s->pid_integral =  pid_integral_max; }
-    if (s->pid_integral < -pid_integral_max) { s->pid_integral = -pid_integral_max; }
+    if (s->pid_integral >  s->pid_integral_max) { s->pid_integral =  s->pid_integral_max; }
+    if (s->pid_integral < -s->pid_integral_max) { s->pid_integral = -s->pid_integral_max; }
 
     float derr = s->has_last_error ? ((error - s->last_error_deg) / dt_s) : 0.0f;
     s->last_error_deg = error;
@@ -512,12 +511,11 @@ static void vesc_servo_telemetry_handler(VESC_Handle_t *h, VESC_CAN_PacketId_t s
         uint32_t now      = HAL_GetTick();
         uint8_t  had_tick = s->tick_initialized;
         float    dt_s     = had_tick ? ((float)(now - s->last_tick) / 1000.0f) : 0.0f;
-        float    max_dt_s = (float)s->cfg.max_step_dt_ms / 1000.0f;
 
         s->last_tick        = now;
         s->tick_initialized = 1U;
 
-        if (had_tick && (dt_s > max_dt_s))
+        if (had_tick && (dt_s > s->max_step_dt_s))
         {
             /* Разрыв между приходами STATUS_4 больше max_step_dt_ms - см.
              * подробное обоснование обоих следствий в комментарии над
@@ -577,6 +575,23 @@ static void vesc_servo_telemetry_handler(VESC_Handle_t *h, VESC_CAN_PacketId_t s
 VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
 {
     if (config == NULL)
+    {
+        return NULL;
+    }
+    /* NaN/Inf где угодно в конфиге нужно ловить ЗДЕСЬ, отдельно и в первую
+     * очередь - сравнения с NaN всегда ложны, так что ни одна из проверок
+     * "<= 0"/"вне диапазона" ниже сама по себе NaN не поймает (например
+     * NaN <= 0.0f тоже false, т.е. "обязательно > 0" пропустит NaN). Без
+     * этой проверки NaN/Inf из конфига тихо просочился бы в кэш производных
+     * величин (inv_gear_ratio и т.п. - см. ниже) и во весь контур. */
+    if (!isfinite(config->gear_ratio) || !isfinite(config->max_speed_deg_s)
+        || !isfinite(config->max_accel_deg_s2) || !isfinite(config->pid_kp)
+        || !isfinite(config->pid_ki) || !isfinite(config->pid_kd) || !isfinite(config->pid_i_max)
+        || !isfinite(config->error_start_correcting_deg) || !isfinite(config->error_stop_deg)
+        || !isfinite(config->brake_at_target_fraction) || !isfinite(config->limit_min_deg)
+        || !isfinite(config->limit_max_deg) || !isfinite(config->working_min_deg)
+        || !isfinite(config->working_max_deg) || !isfinite(config->home_position_deg)
+        || !isfinite(config->homing_seek_speed_deg_s) || !isfinite(config->homing_backoff_speed_deg_s))
     {
         return NULL;
     }
@@ -663,6 +678,15 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
     if (s->cfg.telemetry_timeout_ms == 0U) { s->cfg.telemetry_timeout_ms = 200U;   }
     if (s->cfg.homing_timeout_ms == 0U)     { s->cfg.homing_timeout_ms = 15000U;  }
     if (s->cfg.max_step_dt_ms == 0U)        { s->cfg.max_step_dt_ms = 100U;       }
+
+    /* cfg отсюда и до конца жизни сервы больше не меняется (сеттера нет) -
+     * считаем производные величины для горячего пути один раз здесь, а не
+     * на каждом тике (см. поля-кэши в vesc_servo.h). */
+    s->inv_gear_ratio      = 1.0f / s->cfg.gear_ratio;
+    s->motor_rpm_per_deg_s = s->cfg.gear_ratio / 6.0f;
+    s->inv_2_max_accel     = 1.0f / (2.0f * s->cfg.max_accel_deg_s2);
+    s->pid_integral_max    = s->cfg.pid_i_max / fabsf(s->cfg.pid_ki);
+    s->max_step_dt_s       = (float)s->cfg.max_step_dt_ms / 1000.0f;
 
     s->used         = 1U;
     s->state        = VESC_SERVO_STATE_DISABLED;
@@ -864,7 +888,7 @@ HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float ac
      * команду исполняться до следующего тика. */
     vesc_servo_stop_motor(s);
 
-    s->output_offset_deg = actual_position_deg - (s->motor_unwrapped_deg / s->cfg.gear_ratio);
+    s->output_offset_deg = actual_position_deg - (s->motor_unwrapped_deg * s->inv_gear_ratio);
 
     s->target_deg = vesc_servo_clamp_to_limits(s, actual_position_deg);
     s->moving      = vesc_servo_beyond_limits(s, actual_position_deg); /* см. beyond_limits в vesc_servo_position_step */
