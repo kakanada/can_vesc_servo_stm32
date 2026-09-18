@@ -7,11 +7,11 @@
  *          этого модуля, наружу торчит только API сервы.
  *
  * @author  Mechanic
- * @date    12.08.2026
- * @version 1.2
- * @copyright Свободное некоммерческое использование и модификация -
- *          PolyForm Noncommercial License 1.0.0, полный текст см. LICENSE
- *          в корне библиотеки либо https://polyformproject.org/licenses/noncommercial/1.0.0
+ * @date    18.09.2026
+ * @version 1.3
+ * @copyright Copyright (c) 2026 Mechanic.
+ *            Свободное некоммерческое использование и модификация. Условия
+ *            распространения - см. LICENSE / README.md в составе проекта.
  *
  *          === ЧТО ЭТО И ЗАЧЕМ ===
  *          Штатный контур позиции (Position PID) у VESC на практике у
@@ -32,10 +32,10 @@
  *              не микро-подруливания - убирает залипание/дрожание у цели.
  *
  *          === САМОДОСТАТОЧНОСТЬ - VESC_CAN_Init() ВАМ БОЛЬШЕ НЕ НУЖЕН ===
- *          Раньше этот модуль принимал уже готовый VESC_Handle_t от
- *          motor_vesc. Теперь всё наоборот: VESC_Servo_Init() САМ регистрирует
- *          веску внутри себя (шина + CAN ID + число полюсов теперь - прямо
- *          в VESC_Servo_Config_t, см. ниже) и сам подписывается на её
+ *          Этот модуль принимает не готовый VESC_Handle_t, а хэндл ШИНЫ
+ *          (CANMGR_Handle_t* - см. can_manager.h) и сам регистрирует веску
+ *          внутри себя (шина + CAN ID + число полюсов - прямо в
+ *          VESC_Servo_Config_t, см. ниже), сам подписывается на её
  *          телеметрию. Работать с API motor_vesc напрямую (VESC_CAN_Init,
  *          VESC_CAN_SendXxx, VESC_CAN_SetTelemetryCallback и т.д.) для
  *          обычного использования сервы вам БОЛЬШЕ НЕ НУЖНО - только
@@ -46,27 +46,51 @@
  *          напрямую, но команды ему вручную слать не нужно и не следует -
  *          это будет конфликтовать с контуром позиции сервы.
  *
- *          Единственное, что ОБЩЕЕ с motor_vesc и по-прежнему требуется -
- *          это подключение прерываний CAN/FDCAN. Воткните их РОВНО ТАК ЖЕ,
- *          как описано в motor_vesc.h - этот модуль их не переопределяет и
- *          не подменяет, он лишь использует ту же периферию изнутри.
- *          Коротко (подробности и бэкенд bxCAN vs FDCAN - см. motor_vesc.h):
+ *          @warning [ЛОМАЮЩЕЕ ИЗМЕНЕНИЕ] Начиная с версии 1.3 (миграция
+ *          motor_vesc на can_manager) периферией CAN/FDCAN не владеет ни
+ *          motor_vesc, ни этот модуль - ей единолично владеет отдельная
+ *          библиотека `can_manager` (см. can_manager.h, проект
+ *          can-managers-stm32). Поле VESC_Servo_Config_t.hcan (было
+ *          VESC_CAN_HandleTypeDef*, т.е. ваш сырой &hfdcan1/&hcan1)
+ *          переименовано в `bus` и имеет тип CANMGR_Handle_t* - указатель,
+ *          который вы получаете из CANMGR_Init(), а не сырой HAL-хэндл
+ *          напрямую. Порядок настройки:
+ *
+ *            1. Настраиваете периферию CAN/FDCAN в CubeMX (Init, БЕЗ Start -
+ *               старт делает can_manager) и вызываете CANMGR_Init() - см.
+ *               can_manager.h - получаете CANMGR_Handle_t *bus.
+ *            2. Подключаете HAL-callback'и can_manager (РОВНО ТАК ЖЕ, как
+ *               описано в can_manager.h - этот модуль их не переопределяет
+ *               и не подменяет, ни motor_vesc, ни vesc_servo больше не
+ *               трогают периферию сами):
  *
  *            Бэкенд FDCAN (STM32H7 и т.п.):
  *              void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
- *                  VESC_CAN_RxFifo0_Handler(hfdcan, RxFifo0ITs);
+ *                  CANMGR_RxFifo_Handler(hfdcan, RxFifo0ITs);
  *              }
  *              void HAL_FDCAN_TxFifoEmptyCallback(FDCAN_HandleTypeDef *hfdcan) {
- *                  VESC_CAN_TxComplete_Handler(hfdcan);
+ *                  CANMGR_TxComplete_Handler(hfdcan);
+ *              }
+ *              void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs) {
+ *                  CANMGR_ErrorStatus_Handler(hfdcan, ErrorStatusITs);
  *              }
  *
  *            Бэкенд bxCAN (STM32F4 и т.п.):
  *              void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
- *                  VESC_CAN_RxFifo0_Handler(hcan, 0);
+ *                  CANMGR_RxFifo_Handler(hcan);
  *              }
- *              void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
- *              void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
- *              void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
+ *              void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+ *              void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+ *              void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+ *              void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan) {
+ *                  CANMGR_ErrorStatus_Handler(hcan);
+ *              }
+ *
+ *            3. Полученный CANMGR_Handle_t* передаёте в VESC_Servo_Config_t.bus
+ *               и вызываете VESC_Servo_Init() как обычно.
+ *
+ *          Ошибочный/пропущенный HAL_CAN_ErrorCallback - самая частая причина,
+ *          по которой шина не восстанавливается после Bus-Off, см. can_manager.h.
  *
  *          Всё остальное, что раньше делалось через motor_vesc напрямую -
  *          создание вески, отправка команд, подписка на телеметрию - теперь
@@ -356,11 +380,10 @@ typedef struct
     /* ---- Веска, которую создаёт и обслуживает сама серва (было отдельным
      *      VESC_CAN_Init() снаружи - теперь параметры прямо здесь) ---- */
 
-    /** Шина, на которой сидит веска этой сервы (&hfdcan1/&hcan1 и т.п.).
-     *  Периферия CAN/FDCAN должна быть уже проинициализирована CubeMX-
-     *  функцией (HAL_CAN_Init/HAL_FDCAN_Init) - Start и настройку фильтра
-     *  веска берёт на себя сама, как и раньше в motor_vesc. */
-    VESC_CAN_HandleTypeDef *hcan;
+    /** Хэндл шины can_manager, на которой сидит веска этой сервы - то, что
+     *  вернул CANMGR_Init() (см. can_manager.h), а НЕ сырой &hfdcan1/&hcan1
+     *  (см. @warning про ломающее изменение в шапке файла). */
+    CANMGR_Handle_t *bus;
 
     /** CAN ID вески (0..255, задаётся в VESC Tool: App Settings -> General
      *  -> VESC ID). */
@@ -670,9 +693,9 @@ struct VESC_Servo_Handle_s
  *           - любое из числовых полей конфига (все float-поля
  *             VESC_Servo_Config_t) - NaN или Inf;
  *           - не удалось зарегистрировать веску (см. VESC_CAN_Init() в
- *             motor_vesc.h: hcan == NULL, pole_count == 0 либо нечётный,
+ *             motor_vesc.h: bus == NULL, pole_count == 0 либо нечётный,
  *             исчерпаны внутренние пулы motor_vesc, ошибка периферии);
- *           - эта же (hcan, vesc_id) уже обёрнута другой сервой ранее -
+ *           - эта же (bus, vesc_id) уже обёрнута другой сервой ранее -
  *             колбэк телеметрии на веску только один, второй серве он не
  *             достанется;
  *           - gear_ratio/max_speed_deg_s/max_accel_deg_s2/pid_i_max <= 0;

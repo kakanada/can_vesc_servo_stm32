@@ -7,9 +7,10 @@
  *          нужно).
  *
  * @author  Mechanic
- * @date    12.08.2026
- * @copyright Свободное некоммерческое использование и модификация -
- *          PolyForm Noncommercial License 1.0.0, см. LICENSE в корне библиотеки.
+ * @date    18.09.2026
+ * @copyright Copyright (c) 2026 Mechanic.
+ *            Свободное некоммерческое использование и модификация. Условия
+ *            распространения - см. LICENSE / README.md в составе проекта.
  *
  *          Сценарий:
  *            1. При старте программы - один раз инициализируем серву
@@ -31,10 +32,13 @@
  *               VESC_Servo_CheckAlive(), если важно, чтобы состояние сервы
  *               достоверно показывало полную потерю связи с веской.
  *
- *          Единственное, что осталось общим с motor_vesc и по-прежнему
- *          требуется - подключение HAL-callback'ов CAN/FDCAN (см. пункт 6
- *          и шапку vesc_servo.h) - воткните их РОВНО ТАК ЖЕ, как в
- *          motor_vesc.h. Работать с остальным API motor_vesc напрямую
+ *          [ЛОМАЮЩЕЕ ИЗМЕНЕНИЕ, версия 1.3] Периферией CAN/FDCAN владеет не
+ *          motor_vesc и не vesc_servo, а отдельная библиотека can_manager
+ *          (проект can-managers-stm32, см. can_manager.h) - её нужно
+ *          самостоятельно инициализировать (CANMGR_Init(), пункт 0 ниже) ДО
+ *          VESC_Servo_Init(), и именно её HAL-callback'и подключаются
+ *          (см. пункт 6 и шапку vesc_servo.h) - воткните их РОВНО ТАК ЖЕ,
+ *          как в can_manager.h. Работать с API motor_vesc напрямую
  *          (VESC_CAN_Init, VESC_CAN_SendXxx, VESC_CAN_SetTelemetryCallback)
  *          для обычного использования сервы не нужно - только заполните
  *          VESC_Servo_Config_t, всё остальное сделает сама серва.
@@ -48,8 +52,13 @@
 #include "vesc_servo.h"
 
 /* Хэндл CAN-периферии из CubeMX (hcan1 для bxCAN / hfdcan1 для FDCAN) -
- * объявлен где-то в вашем main.c, здесь только extern-объявление. */
-extern VESC_CAN_HandleTypeDef hcan1;
+ * объявлен где-то в вашем main.c, здесь только extern-объявление. Это
+ * СЫРОЙ HAL-хэндл - нужен только один раз, для CANMGR_Init() ниже. */
+extern CANMGR_CAN_HandleTypeDef hcan1;
+
+/* Хэндл шины can_manager - то, что вернул CANMGR_Init(). Именно ЕГО, а не
+ * hcan1 напрямую, передаём в VESC_Servo_Config_t.bus (см. пункт 0). */
+static CANMGR_Handle_t *g_can_bus = NULL;
 
 /* Указатель на серву - живёт всё время работы программы. Отдельного
  * указателя на веску заводить не нужно - при желании читать её "сырую"
@@ -61,7 +70,27 @@ static VESC_Servo_Handle_t *g_wheel_servo = NULL;
 void VESC_Servo_Example_OnTelemetry(VESC_Servo_Handle_t *s, VESC_CAN_PacketId_t status_id);
 
 /* ------------------------------------------------------------------------ */
-/*  1. Инициализация - вызвать ОДИН РАЗ при старте программы                */
+/*  0. Шина can_manager - вызвать ОДИН РАЗ при старте, ДО VESC_Servo_Init() */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * @brief  Инициализирует шину can_manager поверх уже проинициализированной
+ *         (но не запущенной - Start делает сам can_manager) в CubeMX
+ *         периферии CAN/FDCAN. Один вызов на физическую шину, даже если на
+ *         ней будет несколько серв/весок - все они регистрируют СВОИ
+ *         фильтры на одном и том же g_can_bus (см. VESC_Servo_Example_Setup).
+ */
+void VESC_Servo_Example_BusSetup(void)
+{
+    CANMGR_Config_t bus_cfg = {0};
+    bus_cfg.hcan = &hcan1;
+
+    g_can_bus = CANMGR_Init(&bus_cfg);
+    /* g_can_bus == NULL - ошибка конфигурации/периферии, обработайте под свой проект */
+}
+
+/* ------------------------------------------------------------------------ */
+/*  1. Инициализация - вызвать ОДИН РАЗ при старте, ПОСЛЕ BusSetup() выше   */
 /* ------------------------------------------------------------------------ */
 
 /**
@@ -76,7 +105,7 @@ void VESC_Servo_Example_Setup(void)
     VESC_Servo_Config_t servo_cfg = {0};
 
     /* --- Веска (было отдельным VESC_CAN_Init() - теперь прямо здесь) --- */
-    servo_cfg.hcan       = &hcan1;
+    servo_cfg.bus        = g_can_bus; /* см. VESC_Servo_Example_BusSetup() выше */
     servo_cfg.vesc_id    = 42;   /* CAN ID вески, см. VESC Tool */
     servo_cfg.pole_count = 14;   /* число полюсов мотора        */
 
@@ -227,15 +256,24 @@ void VESC_Servo_Example_HousekeepingTick(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/*  6. HAL-callback'и CAN - ЕДИНСТВЕННОЕ, что осталось общим с motor_vesc,  */
-/*     см. подробную шпаргалку в motor_vesc.h и в шапке vesc_servo.h        */
+/*  6. HAL-callback'и CAN - ТЕПЕРЬ ЭТО ДЕЛО can_manager, не motor_vesc/     */
+/*     vesc_servo - см. подробную шпаргалку в can_manager.h и в шапке       */
+/*     vesc_servo.h. Пример для бэкенда bxCAN (STM32F4 и т.п.) - для FDCAN  */
+/*     (STM32H7 и т.п.) сигнатуры другие, см. can_manager.h.                */
 /* ------------------------------------------------------------------------ */
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-    VESC_CAN_RxFifo0_Handler(hcan, 0);
+    CANMGR_RxFifo_Handler(hcan);
 }
 
-void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
-void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
-void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan) { VESC_CAN_TxComplete_Handler(hcan); }
+void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan) { CANMGR_TxComplete_Handler(hcan); }
+
+/* Без этого обработчика шина НЕ восстановится сама после Bus-Off - см.
+ * can_manager.h. */
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
+{
+    CANMGR_ErrorStatus_Handler(hcan);
+}

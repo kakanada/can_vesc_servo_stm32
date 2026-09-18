@@ -4,11 +4,11 @@
  * @brief   Реализация сервослоя поверх motor_vesc. См. vesc_servo.h.
  *
  * @author  Mechanic
- * @date    12.08.2026
- * @version 1.2
- * @copyright Свободное некоммерческое использование и модификация -
- *          PolyForm Noncommercial License 1.0.0, полный текст см. LICENSE
- *          в корне библиотеки либо https://polyformproject.org/licenses/noncommercial/1.0.0
+ * @date    18.09.2026
+ * @version 1.3
+ * @copyright Copyright (c) 2026 Mechanic.
+ *            Свободное некоммерческое использование и модификация. Условия
+ *            распространения - см. LICENSE / README.md в составе проекта.
  ******************************************************************************
  */
 
@@ -654,7 +654,7 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
      * эта функция нижнего уровня этим слоем не используется и не должна
      * включаться для вески, обёрнутой сервой (см. предупреждение в .h). */
     VESC_Config_t vesc_cfg = {0};
-    vesc_cfg.hcan       = config->hcan;
+    vesc_cfg.bus        = config->bus;
     vesc_cfg.vesc_id    = config->vesc_id;
     vesc_cfg.pole_count = config->pole_count;
 
@@ -668,7 +668,7 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
         return NULL; /* эта веска уже обёрнута другой сервой - см. предупреждение в vesc_servo.h:
                        * колбэк телеметрии на веску только один, вторая серва его бы просто отобрала
                        * и молча перестала получать события. VESC_CAN_Init() выше идемпотентен для
-                       * уже зарегистрированной (hcan, vesc_id) - новый слот motor_vesc не расходуется. */
+                       * уже зарегистрированной (bus, vesc_id) - новый слот motor_vesc не расходуется. */
     }
 
     memset(s, 0, sizeof(*s));
