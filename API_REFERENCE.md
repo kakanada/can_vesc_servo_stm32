@@ -36,6 +36,7 @@
   - [`VESC_Servo_ReadLimitSwitch`](#vesc_servo_readlimitswitch)
   - [`VESC_Servo_GetLimitMinDeg` / `GetLimitMaxDeg`](#vesc_servo_getlimitmindeg--getlimitmaxdeg)
   - [`VESC_Servo_GetWorkingMinDeg` / `GetWorkingMaxDeg`](#vesc_servo_getworkingmindeg--getworkingmaxdeg)
+- [Логирование (опционально)](#логирование-опционально)
 
 ## Типы
 
@@ -387,3 +388,9 @@ float VESC_Servo_GetWorkingMaxDeg(VESC_Servo_Handle_t *s);
 ```
 
 Границы рабочего диапазона из конфига, градусы. `0.0`, если `s == NULL`.
+
+## Логирование (опционально)
+
+Включается `#define LOGGER_ENABLE_VESC_SERVO` (интеграция с `stm32_logger`, коды
+`LOG_CODE_VESC_SERVO_*`) — без него не подключается вовсе. Подробности и полный список кодов — см.
+README.md и раздел «ОПЦИОНАЛЬНАЯ ИНТЕГРАЦИЯ С stm32_logger» в `vesc_servo.h`.

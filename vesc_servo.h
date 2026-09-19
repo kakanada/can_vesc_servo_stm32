@@ -7,8 +7,8 @@
  *          этого модуля, наружу торчит только API сервы.
  *
  * @author  Mechanic
- * @date    18.09.2026
- * @version 1.3
+ * @date    19.09.2026
+ * @version 1.4
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
  *            распространения - см. LICENSE / README.md в составе проекта.
@@ -217,6 +217,41 @@
  *          накопления суммы может стать заметной. Для типичной сервы с
  *          ограниченным диапазоном перемещения (не непрерывно вращающейся)
  *          это не актуально.
+ *
+ *          === ОПЦИОНАЛЬНАЯ ИНТЕГРАЦИЯ С stm32_logger ===
+ *          Модуль умеет логировать ключевые события (ошибки Init, вход в
+ *          FAULT, начало/конец хоуминга) через библиотеку логирования
+ *          stm32_logger (project stm32_logger, logger.h), но НЕ требует её -
+ *          зависимость целиком опциональная и включается одним define,
+ *          заданным ДО подключения vesc_servo.c к сборке (например в
+ *          настройках проекта или в первом инклюде):
+ *
+ *              #define LOGGER_ENABLE_VESC_SERVO
+ *
+ *          Без этого define модуль собирается и работает точно так же, как
+ *          раньше, не подключая ни одного файла stm32_logger. С этим define
+ *          нужно, чтобы logger_codes.h вашего проекта резервировал коды
+ *          LOG_CODE_VESC_SERVO_* под этим же define (см. правила интеграции
+ *          зависимых библиотек в шапке logger_codes.h библиотеки stm32_logger
+ *          - адресное пространство коду этого модуля выделяет владелец
+ *          logger_codes.h, а не сам этот модуль). Полный список кодов,
+ *          которые модуль пытается логировать, если define включён (все
+ *          вызовы - VESC_SERVO_LOG(), source_id = vesc_id этой сервы):
+ *            - LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG  - VESC_Servo_Init():
+ *              конфигурация отклонена (см. полный список причин у retval);
+ *            - LOG_CODE_VESC_SERVO_INIT_POOL_FULL   - исчерпан VESC_SERVO_MAX_SERVOS;
+ *            - LOG_CODE_VESC_SERVO_INIT_VESC_FAIL   - VESC_CAN_Init() (motor_vesc)
+ *              вернул ошибку;
+ *            - LOG_CODE_VESC_SERVO_INIT_DUPLICATE   - эта веска уже обёрнута
+ *              другой сервой;
+ *            - LOG_CODE_VESC_SERVO_INIT_OK          - серва успешно зарегистрирована;
+ *            - LOG_CODE_VESC_SERVO_FAULT_ENTERED    - переход в VESC_SERVO_STATE_FAULT
+ *              (потеря телеметрии STATUS_4 или таймаут хоуминга);
+ *            - LOG_CODE_VESC_SERVO_HOMING_START     - VESC_Servo_StartHoming() запустила хоуминг;
+ *            - LOG_CODE_VESC_SERVO_HOMING_DONE      - хоуминг успешно завершён.
+ *          Если LOGGER_ENABLE_VESC_SERVO не определён - все вызовы LOGGER_Log()
+ *          заменяются пустым оператором на этапе препроцессора, ни один код
+ *          логгера в бинарь не попадает.
  *
  *          === ПАТТЕРН API (см. так же пример использования в README.md) ===
  *          1. Один раз при старте: заполняете VESC_Servo_Config_t (шина,

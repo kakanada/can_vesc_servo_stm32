@@ -4,8 +4,8 @@
  * @brief   Реализация сервослоя поверх motor_vesc. См. vesc_servo.h.
  *
  * @author  Mechanic
- * @date    18.09.2026
- * @version 1.3
+ * @date    19.09.2026
+ * @version 1.4
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
  *            распространения - см. LICENSE / README.md в составе проекта.
@@ -15,6 +15,20 @@
 #include "vesc_servo.h"
 #include <string.h>
 #include <math.h>
+
+/* ========================================================================
+ *  Опциональная интеграция с stm32_logger (см. @warning в шапке .h) -
+ *  подключается ТОЛЬКО если проект сам определил LOGGER_ENABLE_VESC_SERVO
+ *  (и подключаемый logger_codes.h реально резервирует LOG_CODE_VESC_SERVO_*)
+ *  - без этого define модуль полностью самодостаточен, как и раньше.
+ * ====================================================================== */
+#ifdef LOGGER_ENABLE_VESC_SERVO
+#include "logger.h"
+#include "logger_codes.h"
+#define VESC_SERVO_LOG(code, source_id, value) LOGGER_Log((code), (source_id), (value))
+#else
+#define VESC_SERVO_LOG(code, source_id, value) ((void)0)
+#endif
 
 /* ========================================================================
  *  Внутреннее состояние модуля
@@ -251,6 +265,7 @@ static void vesc_servo_homing_finish(VESC_Servo_Handle_t *s)
 
     s->homing_state = VESC_SERVO_HOMING_DONE;
     s->state        = VESC_SERVO_STATE_READY;
+    VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_HOMING_DONE, s->cfg.vesc_id, 0);
 }
 
 /** Останавливает мотор и переводит серву в FAULT - единая точка для всех
@@ -267,6 +282,7 @@ static void vesc_servo_enter_fault(VESC_Servo_Handle_t *s, uint8_t homing_failed
     }
     s->moving = 0U;
     s->state  = VESC_SERVO_STATE_FAULT;
+    VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_FAULT_ENTERED, s->cfg.vesc_id, homing_failed ? 1 : 0);
 }
 
 /** Один шаг процедуры хоуминга, вызывается изнутри обработчика телеметрии
@@ -576,6 +592,7 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
 {
     if (config == NULL)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, 0U, 0);
         return NULL;
     }
     /* NaN/Inf где угодно в конфиге нужно ловить ЗДЕСЬ, отдельно и в первую
@@ -593,43 +610,53 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
         || !isfinite(config->working_max_deg) || !isfinite(config->home_position_deg)
         || !isfinite(config->homing_seek_speed_deg_s) || !isfinite(config->homing_backoff_speed_deg_s))
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 0);
         return NULL;
     }
     if ((config->gear_ratio <= 0.0f) || (config->max_speed_deg_s <= 0.0f) || (config->max_accel_deg_s2 <= 0.0f))
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 1);
         return NULL;
     }
     if (config->pid_i_max <= 0.0f)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 2);
         return NULL; /* нулевой/отрицательный анти-виндап - интегратор либо не работает, либо не ограничен */
     }
     if (config->limit_switch_pressed_state == VESC_CUSTOM_SENSOR_NONE)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 3);
         return NULL; /* NONE - это "данных ещё не было", не физическое состояние концевика */
     }
     if (config->error_start_correcting_deg <= 0.0f)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 4);
         return NULL; /* иначе коррекция будет запускаться даже при нулевой ошибке - постоянное дрожание */
     }
     if ((config->error_stop_deg < 0.0f) || (config->error_stop_deg > config->error_start_correcting_deg))
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 5);
         return NULL; /* порог остановки должен быть в [0, порог_запуска] - иначе гистерезис не работает */
     }
     if ((config->brake_at_target_fraction < 0.0f) || (config->brake_at_target_fraction > 1.0f))
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 6);
         return NULL; /* доля тока в VESC_CAN_SendCurrentBrakeRel - только 0.0..1.0 */
     }
     if (config->limit_max_deg <= config->limit_min_deg)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 7);
         return NULL; /* зона лимитов должна быть непустой */
     }
     if ((config->working_min_deg < config->limit_min_deg) || (config->working_max_deg > config->limit_max_deg)
         || (config->working_max_deg <= config->working_min_deg))
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 8);
         return NULL; /* рабочий диапазон должен быть непустым и целиком помещаться в зону лимитов */
     }
     if ((config->home_position_deg < config->limit_min_deg) || (config->home_position_deg > config->limit_max_deg))
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 9);
         return NULL; /* точка хоуминга обязана лежать внутри зоны лимитов */
     }
 
@@ -645,6 +672,7 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
     VESC_Servo_Handle_t *s = vesc_servo_find_free_slot();
     if (s == NULL)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_POOL_FULL, config->vesc_id, 0);
         return NULL; /* исчерпан VESC_SERVO_MAX_SERVOS */
     }
 
@@ -661,10 +689,12 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
     VESC_Handle_t *vesc = VESC_CAN_Init(&vesc_cfg);
     if (vesc == NULL)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_VESC_FAIL, config->vesc_id, 0);
         return NULL; /* ошибка конфигурации/периферии CAN - см. VESC_CAN_Init() в motor_vesc.h */
     }
     if (vesc_servo_find_by_vesc(vesc) != NULL)
     {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_DUPLICATE, config->vesc_id, 0);
         return NULL; /* эта веска уже обёрнута другой сервой - см. предупреждение в vesc_servo.h:
                        * колбэк телеметрии на веску только один, вторая серва его бы просто отобрала
                        * и молча перестала получать события. VESC_CAN_Init() выше идемпотентен для
@@ -698,6 +728,7 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
      * по приходу STATUS_4 (см. vesc_servo_telemetry_handler выше). */
     VESC_CAN_SetTelemetryCallback(s->vesc, vesc_servo_telemetry_handler);
 
+    VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_OK, config->vesc_id, 0);
     return s;
 }
 
@@ -827,6 +858,7 @@ HAL_StatusTypeDef VESC_Servo_StartHoming(VESC_Servo_Handle_t *s)
     s->homing_state            = pressed ? VESC_SERVO_HOMING_BACKOFF : VESC_SERVO_HOMING_SEEK;
 
     vesc_servo_refresh_telemetry(s);
+    VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_HOMING_START, s->cfg.vesc_id, 0);
     return HAL_OK;
 }
 
