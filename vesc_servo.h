@@ -497,15 +497,24 @@ struct VESC_Servo_Handle_s
  */
 VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config);
 
-/** Текущий угол ВЫХОДНОГО вала, градусы. До первого прихода телеметрии
- *  возвращает 0.0. До успешного хоуминга/калибровки (VESC_Servo_IsHomed()
- *  == 0) значение достоверно только ОТНОСИТЕЛЬНО момента VESC_Servo_Init(),
- *  но не привязано к реальному механическому нулю. Эквивалентно
- *  s->telemetry.position_deg. */
+/**
+ * @brief   Текущий угол ВЫХОДНОГО вала, градусы (эквивалентно s->telemetry.position_deg).
+ *
+ *          До первого прихода телеметрии возвращает 0.0. До успешного
+ *          хоуминга/калибровки (VESC_Servo_IsHomed() == 0) значение достоверно
+ *          только ОТНОСИТЕЛЬНО момента VESC_Servo_Init(), но не привязано к
+ *          реальному механическому нулю.
+ * @param   s  хэндл сервы
+ * @retval  текущий угол выходного вала, градусы; 0.0, если s == NULL
+ */
 float VESC_Servo_GetPositionDeg(VESC_Servo_Handle_t *s);
 
-/** Заданная в данный момент конечная цель, градусы выходного вала.
- *  Эквивалентно s->telemetry.target_deg. */
+/**
+ * @brief   Заданная в данный момент конечная цель, градусы выходного вала
+ *          (эквивалентно s->telemetry.target_deg).
+ * @param   s  хэндл сервы
+ * @retval  текущая цель, градусы; 0.0, если s == NULL
+ */
 float VESC_Servo_GetTargetDeg(VESC_Servo_Handle_t *s);
 
 /** Возвращает указатель на телеметрию сервы. Чисто для удобства/симметрии с
@@ -516,44 +525,87 @@ float VESC_Servo_GetTargetDeg(VESC_Servo_Handle_t *s);
  */
 const VESC_Servo_Telemetry_t *VESC_Servo_GetTelemetry(VESC_Servo_Handle_t *s);
 
-/** 1 - хоуминг когда-либо успешно завершался (или была ручная калибровка
- *  VESC_Servo_SetCurrentPosition()), т.е. VESC_Servo_GetHomingState() ==
- *  VESC_SERVO_HOMING_DONE; 0 - иначе (в т.ч. если s == NULL). */
+/**
+ * @brief   Проверяет, завершался ли когда-либо успешно хоуминг/калибровка
+ *          (VESC_Servo_GetHomingState() == VESC_SERVO_HOMING_DONE).
+ * @param   s  хэндл сервы
+ * @retval  1, если да; 0 - иначе (в т.ч. если s == NULL)
+ */
 uint8_t VESC_Servo_IsHomed(VESC_Servo_Handle_t *s);
 
-/** 1 - серва в VESC_SERVO_STATE_READY и коррекция сейчас НЕ активна
- *  (|target - факт| уже опустилась до error_stop_deg и ниже - см.
- *  VESC_Servo_Config_t); 0 - иначе (в т.ч. если s == NULL). */
+/**
+ * @brief   Проверяет, что серва в VESC_SERVO_STATE_READY и коррекция сейчас НЕ
+ *          активна (|target - факт| уже опустилась до error_stop_deg и ниже).
+ * @param   s  хэндл сервы
+ * @retval  1, если да; 0 - иначе (в т.ч. если s == NULL)
+ */
 uint8_t VESC_Servo_IsAtTarget(VESC_Servo_Handle_t *s);
 
-/** Текущее общее состояние сервы (см. VESC_Servo_State_t). VESC_SERVO_STATE_DISABLED,
- *  если s == NULL. Эквивалентно s->telemetry.state. */
+/**
+ * @brief   Текущее общее состояние сервы (см. VESC_Servo_State_t, эквивалентно
+ *          s->telemetry.state).
+ * @param   s  хэндл сервы
+ * @retval  текущее состояние; VESC_SERVO_STATE_DISABLED, если s == NULL
+ */
 VESC_Servo_State_t VESC_Servo_GetState(VESC_Servo_Handle_t *s);
 
-/** Текущий/последний этап процедуры поиска нуля (см. VESC_Servo_HomingState_t).
- *  VESC_SERVO_HOMING_IDLE, если s == NULL. Эквивалентно s->telemetry.homing_state. */
+/**
+ * @brief   Текущий/последний этап процедуры поиска нуля (см.
+ *          VESC_Servo_HomingState_t, эквивалентно s->telemetry.homing_state).
+ * @param   s  хэндл сервы
+ * @retval  текущий этап хоуминга; VESC_SERVO_HOMING_IDLE, если s == NULL
+ */
 VESC_Servo_HomingState_t VESC_Servo_GetHomingState(VESC_Servo_Handle_t *s);
 
-/** Мгновенное состояние концевика по ПОСЛЕДНЕЙ ПРИНЯТОЙ телеметрии
- *  (telemetry.custom_sensor_state, с учётом limit_switch_pressed_state из
- *  конфига) - 1 значит "нажат". Как и с состоянием до первого STATUS_7 (см.
- *  VESC_CUSTOM_SENSOR_NONE в motor_vesc.h), эта функция не отличает
- *  "концевик реально отпущен" от "статус давно не обновлялся" - для
- *  отладки/диагностики этого достаточно, но VESC_Servo_StartHoming() перед
- *  стартом хоуминга сам дополнительно проверяет СВЕЖЕСТЬ STATUS_7, а не
- *  просто его наличие когда-либо. */
+/**
+ * @brief   Мгновенное состояние концевика по ПОСЛЕДНЕЙ ПРИНЯТОЙ телеметрии.
+ *
+ *          Смотрит telemetry.custom_sensor_state с учётом
+ *          limit_switch_pressed_state из конфига - 1 значит "нажат". Как и с
+ *          состоянием до первого STATUS_7 (см. VESC_CUSTOM_SENSOR_NONE в
+ *          motor_vesc.h), эта функция не отличает "концевик реально отпущен"
+ *          от "статус давно не обновлялся" - для отладки/диагностики этого
+ *          достаточно, но VESC_Servo_StartHoming() перед стартом хоуминга сам
+ *          дополнительно проверяет СВЕЖЕСТЬ STATUS_7, а не просто его наличие
+ *          когда-либо.
+ * @param   s  хэндл сервы
+ * @retval  1, если концевик нажат; 0 - иначе (в т.ч. если s == NULL)
+ */
 uint8_t VESC_Servo_ReadLimitSwitch(VESC_Servo_Handle_t *s);
 
-/** Границы ЗОНЫ ЛИМИТОВ, градусы выходного вала (см. limit_min_deg/
- *  limit_max_deg в VESC_Servo_Config_t) - для удобства, например, если UI
- *  хочет отобразить допустимый диапазон. 0.0, если s == NULL. */
+/**
+ * @brief   Нижняя граница ЗОНЫ ЛИМИТОВ, градусы выходного вала (см.
+ *          limit_min_deg в VESC_Servo_Config_t) - для удобства, например,
+ *          если UI хочет отобразить допустимый диапазон.
+ * @param   s  хэндл сервы
+ * @retval  limit_min_deg; 0.0, если s == NULL
+ */
 float VESC_Servo_GetLimitMinDeg(VESC_Servo_Handle_t *s);
+
+/**
+ * @brief   Верхняя граница ЗОНЫ ЛИМИТОВ, градусы выходного вала (см.
+ *          limit_max_deg в VESC_Servo_Config_t).
+ * @param   s  хэндл сервы
+ * @retval  limit_max_deg; 0.0, если s == NULL
+ */
 float VESC_Servo_GetLimitMaxDeg(VESC_Servo_Handle_t *s);
 
-/** Границы РАБОЧЕГО ДИАПАЗОНА, градусы выходного вала (см. working_min_deg/
- *  working_max_deg в VESC_Servo_Config_t и VESC_Servo_SetPositionNormalized()).
- *  0.0, если s == NULL. */
+/**
+ * @brief   Нижняя граница РАБОЧЕГО ДИАПАЗОНА, градусы выходного вала (см.
+ *          working_min_deg в VESC_Servo_Config_t и
+ *          VESC_Servo_SetPositionNormalized()).
+ * @param   s  хэндл сервы
+ * @retval  working_min_deg; 0.0, если s == NULL
+ */
 float VESC_Servo_GetWorkingMinDeg(VESC_Servo_Handle_t *s);
+
+/**
+ * @brief   Верхняя граница РАБОЧЕГО ДИАПАЗОНА, градусы выходного вала (см.
+ *          working_max_deg в VESC_Servo_Config_t и
+ *          VESC_Servo_SetPositionNormalized()).
+ * @param   s  хэндл сервы
+ * @retval  working_max_deg; 0.0, если s == NULL
+ */
 float VESC_Servo_GetWorkingMaxDeg(VESC_Servo_Handle_t *s);
 
 /* ------------------------------------------------------------------------ */

@@ -42,7 +42,10 @@ static VESC_Servo_Handle_t s_servo_pool[VESC_SERVO_MAX_SERVOS];
  *  Общие вспомогательные функции
  * ====================================================================== */
 
-/** Ищет первый свободный (ещё не занятый) слот в статическом пуле серв. */
+/**
+ * @brief   Ищет первый свободный (ещё не занятый) слот в статическом пуле серв.
+ * @return  Указатель на свободный слот, либо NULL если пул исчерпан.
+ */
 static VESC_Servo_Handle_t *vesc_servo_find_free_slot(void)
 {
     for (uint32_t i = 0U; i < VESC_SERVO_MAX_SERVOS; i++)
@@ -55,13 +58,17 @@ static VESC_Servo_Handle_t *vesc_servo_find_free_slot(void)
     return NULL;
 }
 
-/** Ищет уже зарегистрированную серву по хэндлу вески, которую она
- *  оборачивает - используется ТОЛЬКО обработчиком телеметрии
- *  (vesc_servo_telemetry_handler), чтобы по пришедшему в колбэк
- *  VESC_Handle_t* найти "свою" VESC_Servo_Handle_t*, так как сам колбэк
- *  motor_vesc не передаёт пользовательский контекст. Пул серв небольшой
- *  (VESC_SERVO_MAX_SERVOS), линейный поиск в ISR обходится в единицы
- *  сравнений указателей и не создаёт заметной задержки. */
+/**
+ * @brief   Ищет уже зарегистрированную серву по хэндлу вески, которую она оборачивает.
+ *
+ *          Используется ТОЛЬКО обработчиком телеметрии (vesc_servo_telemetry_handler),
+ *          чтобы по пришедшему в колбэк VESC_Handle_t* найти "свою" VESC_Servo_Handle_t*,
+ *          так как сам колбэк motor_vesc не передаёт пользовательский контекст. Пул серв
+ *          небольшой (VESC_SERVO_MAX_SERVOS), линейный поиск в ISR обходится в единицы
+ *          сравнений указателей и не создаёт заметной задержки.
+ * @param   vesc  хэндл вески, для которой ищется обёртывающая её серва
+ * @return  Указатель на серву, либо NULL если эта веска не обёрнута.
+ */
 static VESC_Servo_Handle_t *vesc_servo_find_by_vesc(const VESC_Handle_t *vesc)
 {
     for (uint32_t i = 0U; i < VESC_SERVO_MAX_SERVOS; i++)
@@ -74,51 +81,75 @@ static VESC_Servo_Handle_t *vesc_servo_find_by_vesc(const VESC_Handle_t *vesc)
     return NULL;
 }
 
-/** Читает мгновенное состояние концевика сервы s по последней принятой
- *  телеметрии вески (telemetry.custom_sensor_state, кастомный статус №7 -
- *  см. motor_vesc.h), сравнивая её с cfg.limit_switch_pressed_state. 1 -
- *  концевик нажат. Общая внутренняя реализация для публичной
- *  VESC_Servo_ReadLimitSwitch() и для процедуры хоуминга. */
+/**
+ * @brief   Читает мгновенное состояние концевика сервы по последней телеметрии.
+ *
+ *          Сравнивает telemetry.custom_sensor_state (кастомный статус №7 - см.
+ *          motor_vesc.h) с cfg.limit_switch_pressed_state. Общая внутренняя
+ *          реализация для публичной VESC_Servo_ReadLimitSwitch() и для процедуры
+ *          хоуминга.
+ * @param   s  серва
+ * @return  1, если концевик нажат, иначе 0.
+ */
 static uint8_t vesc_servo_read_limit(const VESC_Servo_Handle_t *s)
 {
     return (s->vesc->telemetry.custom_sensor_state == s->cfg.limit_switch_pressed_state) ? 1U : 0U;
 }
 
-/** Переводит накопленный (развёрнутый) угол мотора в угол ВЫХОДНОГО вала:
- *  делит на передаточное число и добавляет офсет, выставленный при
- *  хоуминге/ручной калибровке. Единая точка, где применяется gear_ratio,
- *  чтобы не разойтись между разными местами кода. */
+/**
+ * @brief   Переводит накопленный угол мотора в угол ВЫХОДНОГО вала.
+ *
+ *          Делит на передаточное число и добавляет офсет, выставленный при
+ *          хоуминге/ручной калибровке. Единая точка, где применяется gear_ratio,
+ *          чтобы не разойтись между разными местами кода.
+ * @param   s  серва
+ * @return  Угол выходного вала в градусах.
+ */
 static float vesc_servo_output_deg(const VESC_Servo_Handle_t *s)
 {
     return (s->motor_unwrapped_deg * s->inv_gear_ratio) + s->output_offset_deg;
 }
 
-/** Отправляет на веску целевую МЕХАНИЧЕСКУЮ скорость мотора, эквивалентную
- *  заданной скорости ВЫХОДНОГО вала (с учётом gear_ratio). Единая точка
- *  выхода команды скорости - и для хоуминга, и для контура позиции.
- *  360°/об, 60 с/мин -> RPM = (deg_s / 6) - смотри вывод в шапке файла. */
+/**
+ * @brief   Отправляет на веску механическую скорость мотора, эквивалентную
+ *          заданной скорости выходного вала.
+ *
+ *          Единая точка выхода команды скорости - и для хоуминга, и для контура
+ *          позиции. 360°/об, 60 с/мин -> RPM = (deg_s / 6) - смотри вывод в шапке файла.
+ * @param   s              серва
+ * @param   output_deg_s   желаемая скорость ВЫХОДНОГО вала, град/с
+ */
 static void vesc_servo_send_motor_speed(const VESC_Servo_Handle_t *s, float output_deg_s)
 {
     float motor_rpm = output_deg_s * s->motor_rpm_per_deg_s;
     VESC_CAN_SendMechanicalSpeed(s->vesc, motor_rpm);
 }
 
-/** Немедленная остановка мотора (тормозной ток 0 А - свободное вращение
- *  вала, без активного удержания). Общая точка для аварийных остановок:
- *  вход в DISABLED, провал хоуминга, потеря телеметрии (VESC_Servo_CheckAlive).
- *  Не путать с "тормозом в цели" (см. brake_at_target_fraction) - там
- *  используется VESC_CAN_SendCurrentBrakeRel с заданной ненулевой силой,
- *  а не эта функция. */
+/**
+ * @brief   Немедленная остановка мотора (тормозной ток 0 А, свободное вращение).
+ *
+ *          Общая точка для аварийных остановок: вход в DISABLED, провал хоуминга,
+ *          потеря телеметрии (VESC_Servo_CheckAlive). Не путать с "тормозом в цели"
+ *          (см. brake_at_target_fraction) - там используется VESC_CAN_SendCurrentBrakeRel
+ *          с заданной ненулевой силой, а не эта функция.
+ * @param   s  серва
+ */
 static void vesc_servo_stop_motor(const VESC_Servo_Handle_t *s)
 {
     VESC_CAN_SendCurrentBrake(s->vesc, 0.0f);
 }
 
-/** Обрезает угол выходного вала по ЗОНЕ ЛИМИТОВ (limit_min_deg/limit_max_deg
- *  из конфига) - единая точка, применяется к любому значению, которое
- *  собирается стать s->target_deg, чтобы гарантированно никогда не задать
- *  цель за пределами лимитов, независимо от того, что попросил пользователь
- *  библиотеки. См. подробности в vesc_servo.h. */
+/**
+ * @brief   Обрезает угол выходного вала по зоне лимитов конфига.
+ *
+ *          Единая точка, применяется к любому значению, которое собирается стать
+ *          s->target_deg, чтобы гарантированно никогда не задать цель за пределами
+ *          лимитов, независимо от того, что попросил пользователь библиотеки. См.
+ *          подробности в vesc_servo.h.
+ * @param   s    серва
+ * @param   deg  угол выходного вала, градусы
+ * @return  Угол, обрезанный по [limit_min_deg, limit_max_deg].
+ */
 static float vesc_servo_clamp_to_limits(const VESC_Servo_Handle_t *s, float deg)
 {
     if (deg < s->cfg.limit_min_deg) { return s->cfg.limit_min_deg; }
@@ -126,25 +157,35 @@ static float vesc_servo_clamp_to_limits(const VESC_Servo_Handle_t *s, float deg)
     return deg;
 }
 
-/** 1, если угол deg (градусы выходного вала) лежит СНАРУЖИ зоны лимитов -
- *  единая точка для этого условия, используется и контуром позиции
- *  (vesc_servo_position_step - принудительная коррекция вне гистерезиса), и
- *  местами, которые переустанавливают факт. позицию (VESC_Servo_Enable(),
- *  VESC_Servo_SetCurrentPosition()) и должны знать, нужно ли сразу считать
- *  серву "едущей", а не "на месте". См. подробности про зону лимитов в
- *  vesc_servo.h. */
+/**
+ * @brief   Проверяет, лежит ли угол снаружи зоны лимитов.
+ *
+ *          Единая точка для этого условия, используется и контуром позиции
+ *          (vesc_servo_position_step - принудительная коррекция вне гистерезиса), и
+ *          местами, которые переустанавливают факт. позицию (VESC_Servo_Enable(),
+ *          VESC_Servo_SetCurrentPosition()) и должны знать, нужно ли сразу считать
+ *          серву "едущей", а не "на месте". См. подробности про зону лимитов в
+ *          vesc_servo.h.
+ * @param   s    серва
+ * @param   deg  угол выходного вала, градусы
+ * @return  1, если deg вне [limit_min_deg, limit_max_deg], иначе 0.
+ */
 static uint8_t vesc_servo_beyond_limits(const VESC_Servo_Handle_t *s, float deg)
 {
     return ((deg < s->cfg.limit_min_deg) || (deg > s->cfg.limit_max_deg)) ? 1U : 0U;
 }
 
-/** Сбрасывает состояние трапецеидального профиля и ПИД слежения на позицию
- *  pos - единая точка для всех мест, где контур позиции (пере)стартует от
- *  заданной фактической позиции (начало новой коррекции в гистерезисе,
- *  завершение хоуминга, ручная калибровка, VESC_Servo_Enable()), чтобы не
- *  тянуть за собой старую скорость/интеграл предыдущего движения и не
- *  создавать рывок. НЕ трогает target_deg/moving - это остаётся на
- *  усмотрение вызывающего (не всегда одно и то же значение/логика). */
+/**
+ * @brief   Сбрасывает состояние трапецеидального профиля и ПИД слежения на позицию pos.
+ *
+ *          Единая точка для всех мест, где контур позиции (пере)стартует от заданной
+ *          фактической позиции (начало новой коррекции в гистерезисе, завершение
+ *          хоуминга, ручная калибровка, VESC_Servo_Enable()), чтобы не тянуть за собой
+ *          старую скорость/интеграл предыдущего движения и не создавать рывок. НЕ
+ *          трогает target_deg/moving - это остаётся на усмотрение вызывающего.
+ * @param   s    серва
+ * @param   pos  позиция (градусы выходного вала), на которую сбрасывается профиль/ПИД
+ */
 static void vesc_servo_reset_tracking(VESC_Servo_Handle_t *s, float pos)
 {
     s->profile_pos_deg   = pos;
@@ -153,35 +194,46 @@ static void vesc_servo_reset_tracking(VESC_Servo_Handle_t *s, float pos)
     s->has_last_error     = 0U;
 }
 
-/** 1, если по последнему принятому STATUS_4 ("тику" контура) телеметрия
- *  вески ещё свежая (не старше telemetry_timeout_ms). В отличие от
- *  VESC_CAN_IsAlive() из motor_vesc, который считает "живым" приход ЛЮБОГО
- *  из 7 статусных пакетов - эта проверка специфична именно для STATUS_4,
- *  от которого зависит весь контур позиции/хоуминга (см. шапку файла). */
+/**
+ * @brief   Проверяет свежесть телеметрии STATUS_4 ("тика" контура).
+ *
+ *          В отличие от VESC_CAN_IsAlive() из motor_vesc, который считает "живым"
+ *          приход ЛЮБОГО из 7 статусных пакетов - эта проверка специфична именно для
+ *          STATUS_4, от которого зависит весь контур позиции/хоуминга (см. шапку файла).
+ * @param   s  серва
+ * @return  1, если STATUS_4 не старше telemetry_timeout_ms, иначе 0.
+ */
 static uint8_t vesc_servo_telemetry_fresh(const VESC_Servo_Handle_t *s)
 {
     return (s->tick_initialized && ((HAL_GetTick() - s->last_tick) <= s->cfg.telemetry_timeout_ms)) ? 1U : 0U;
 }
 
-/** 1, если по последнему принятому STATUS_7 (кастомный статус с концевиком)
- *  телеметрия ещё свежая (не старше telemetry_timeout_ms). В отличие от
- *  telemetry.rx_mask из motor_vesc, который лишь фиксирует "приходил хотя бы
- *  раз" и никогда не сбрасывается - эта проверка ловит случай, когда
- *  STATUS_7 перестал приходить (например кастомный статус отключили в VESC
- *  Tool уже после первого прихода), а rx_mask бы этого не заметил. */
+/**
+ * @brief   Проверяет свежесть телеметрии STATUS_7 (кастомный статус с концевиком).
+ *
+ *          В отличие от telemetry.rx_mask из motor_vesc, который лишь фиксирует
+ *          "приходил хотя бы раз" и никогда не сбрасывается - эта проверка ловит
+ *          случай, когда STATUS_7 перестал приходить (например кастомный статус
+ *          отключили в VESC Tool уже после первого прихода), а rx_mask бы этого не
+ *          заметил.
+ * @param   s  серва
+ * @return  1, если STATUS_7 не старше telemetry_timeout_ms, иначе 0.
+ */
 static uint8_t vesc_servo_limit_switch_fresh(const VESC_Servo_Handle_t *s)
 {
     return (s->status7_initialized && ((HAL_GetTick() - s->last_status7_tick) <= s->cfg.telemetry_timeout_ms)) ? 1U : 0U;
 }
 
-/** Пересчитывает и обновляет s->telemetry (см. VESC_Servo_Telemetry_t) по
- *  текущему внутреннему состоянию сервы - единая точка, чтобы "снимок" в
- *  s->telemetry никогда не расходился с реальным state/target/moving.
- *  Вызывается после любого изменения этих полей: изнутри обработчика
- *  телеметрии на каждый принятый статусный пакет (перед вызовом
- *  пользовательского VESC_Servo_TelemetryCallback_t - чтобы снимок был
- *  гарантированно свежим на момент вызова), а также сразу после каждого
- *  публичного вызова API, меняющего цель или состояние сервы. */
+/**
+ * @brief   Пересчитывает и обновляет s->telemetry по текущему внутреннему состоянию.
+ *
+ *          Единая точка, чтобы "снимок" в s->telemetry никогда не расходился с
+ *          реальным state/target/moving. Вызывается после любого изменения этих
+ *          полей: изнутри обработчика телеметрии на каждый принятый статусный пакет
+ *          (перед вызовом пользовательского VESC_Servo_TelemetryCallback_t), а также
+ *          сразу после каждого публичного вызова API, меняющего цель или состояние.
+ * @param   s  серва
+ */
 static void vesc_servo_refresh_telemetry(VESC_Servo_Handle_t *s)
 {
     s->telemetry.position_deg = vesc_servo_output_deg(s);
@@ -192,10 +244,16 @@ static void vesc_servo_refresh_telemetry(VESC_Servo_Handle_t *s)
     s->telemetry.homing_state = s->homing_state;
 }
 
-/** Общая внутренняя реализация задания цели - используется и
- *  VESC_Servo_SetPosition(), и VESC_Servo_SetPositionNormalized(). Обрезает
- *  target_deg по зоне лимитов (см. vesc_servo_clamp_to_limits) перед
- *  сохранением - см. подробности в vesc_servo.h. */
+/**
+ * @brief   Общая внутренняя реализация задания цели контура позиции.
+ *
+ *          Используется и VESC_Servo_SetPosition(), и VESC_Servo_SetPositionNormalized().
+ *          Обрезает target_deg по зоне лимитов (см. vesc_servo_clamp_to_limits) перед
+ *          сохранением - см. подробности в vesc_servo.h.
+ * @param   s           серва
+ * @param   target_deg  новая цель, градусы выходного вала
+ * @return  HAL_OK при успехе, HAL_ERROR если серва не READY или target_deg не конечен.
+ */
 static HAL_StatusTypeDef vesc_servo_set_target(VESC_Servo_Handle_t *s, float target_deg)
 {
     if (!isfinite(target_deg))
@@ -218,13 +276,16 @@ static HAL_StatusTypeDef vesc_servo_set_target(VESC_Servo_Handle_t *s, float tar
  *  Разворачивание (unwrap) угла мотора
  * ====================================================================== */
 
-/** Обновляет накопленный угол мотора (s->motor_unwrapped_deg) по свежему
- *  "сырому" (0..360, заворачивающемуся) значению telemetry.pid_pos. Считает
- *  кратчайшую дельту между предыдущим и новым сырым значением (то есть
- *  предполагает, что между приходами STATUS_4 мотор провернулся МЕНЬШЕ чем
- *  на пол-оборота - см. предупреждение в vesc_servo.h) и прибавляет её к
- *  накопителю. При первом вызове для этой сервы только запоминает точку
- *  отсчёта, ничего не накапливая. */
+/**
+ * @brief   Обновляет накопленный (развёрнутый) угол мотора по свежему сырому значению.
+ *
+ *          Считает кратчайшую дельту между предыдущим и новым сырым (0..360,
+ *          заворачивающимся) значением telemetry.pid_pos (то есть предполагает, что
+ *          между приходами STATUS_4 мотор провернулся МЕНЬШЕ чем на пол-оборота - см.
+ *          предупреждение в vesc_servo.h) и прибавляет её к s->motor_unwrapped_deg. При
+ *          первом вызове для этой сервы только запоминает точку отсчёта.
+ * @param   s  серва
+ */
 static void vesc_servo_update_wrap_tracking(VESC_Servo_Handle_t *s)
 {
     float raw = s->vesc->telemetry.pid_pos;
@@ -248,11 +309,15 @@ static void vesc_servo_update_wrap_tracking(VESC_Servo_Handle_t *s)
  *  Процедура поиска нуля (хоуминг)
  * ====================================================================== */
 
-/** Успешное завершение хоуминга (концевик отпустился на этапе BACKOFF):
- *  останавливает мотор, выставляет output_offset_deg так, чтобы ПРЯМО
- *  СЕЙЧАС угол выходного вала стал равен home_position_deg, сбрасывает
- *  профиль/ПИД/гистерезис на эту же точку (цель = текущая позиция,
- *  коррекция не активна) и переводит серву в READY. */
+/**
+ * @brief   Успешное завершение хоуминга (концевик отпустился на этапе BACKOFF).
+ *
+ *          Останавливает мотор, выставляет output_offset_deg так, чтобы ПРЯМО СЕЙЧАС
+ *          угол выходного вала стал равен home_position_deg, сбрасывает профиль/ПИД/
+ *          гистерезис на эту же точку (цель = текущая позиция, коррекция не активна)
+ *          и переводит серву в READY.
+ * @param   s  серва
+ */
 static void vesc_servo_homing_finish(VESC_Servo_Handle_t *s)
 {
     vesc_servo_stop_motor(s);
@@ -268,11 +333,16 @@ static void vesc_servo_homing_finish(VESC_Servo_Handle_t *s)
     VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_HOMING_DONE, s->cfg.vesc_id, 0);
 }
 
-/** Останавливает мотор и переводит серву в FAULT - единая точка для всех
- *  причин входа в этот фолт (провал хоуминга по таймауту, потеря телеметрии
- *  по VESC_Servo_CheckAlive(), аномальный разрыв STATUS_4 - см. max_step_dt_ms
- *  в vesc_servo.h). homing_failed - пометить ли ещё и homing_state как
- *  VESC_SERVO_HOMING_FAILED (актуально, только если хоуминг был активен). */
+/**
+ * @brief   Останавливает мотор и переводит серву в FAULT.
+ *
+ *          Единая точка для всех причин входа в этот фолт (провал хоуминга по
+ *          таймауту, потеря телеметрии по VESC_Servo_CheckAlive(), аномальный разрыв
+ *          STATUS_4 - см. max_step_dt_ms в vesc_servo.h).
+ * @param   s               серва
+ * @param   homing_failed   пометить ли ещё и homing_state как VESC_SERVO_HOMING_FAILED
+ *                          (актуально, только если хоуминг был активен)
+ */
 static void vesc_servo_enter_fault(VESC_Servo_Handle_t *s, uint8_t homing_failed)
 {
     vesc_servo_stop_motor(s);
@@ -285,15 +355,17 @@ static void vesc_servo_enter_fault(VESC_Servo_Handle_t *s, uint8_t homing_failed
     VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_FAULT_ENTERED, s->cfg.vesc_id, homing_failed ? 1 : 0);
 }
 
-/** Один шаг процедуры хоуминга, вызывается изнутри обработчика телеметрии
- *  на каждый приход STATUS_4, пока s->state == VESC_SERVO_STATE_HOMING.
- *  Проверяет концевик (по телеметрии кастомного статуса вески) и таймаут
- *  текущего этапа, при необходимости переключает этап (SEEK -> BACKOFF)
- *  либо завершает хоуминг (успешно или по таймауту), и в конце (если
- *  процедура ещё не завершилась) на каждом шаге повторно отправляет
- *  команду скорости, соответствующую текущему этапу - это недорого и
- *  подстраховывает от единичной потери CAN-кадра во время длинного
- *  хоуминга. */
+/**
+ * @brief   Один шаг процедуры хоуминга.
+ *
+ *          Вызывается изнутри обработчика телеметрии на каждый приход STATUS_4, пока
+ *          s->state == VESC_SERVO_STATE_HOMING. Проверяет концевик и таймаут текущего
+ *          этапа, при необходимости переключает этап (SEEK -> BACKOFF) либо завершает
+ *          хоуминг (успешно или по таймауту), и в конце (если процедура ещё не
+ *          завершилась) повторно отправляет команду скорости, соответствующую
+ *          текущему этапу.
+ * @param   s  серва
+ */
 static void vesc_servo_homing_step(VESC_Servo_Handle_t *s)
 {
     uint8_t  pressed = vesc_servo_read_limit(s);
@@ -336,8 +408,11 @@ static void vesc_servo_homing_step(VESC_Servo_Handle_t *s)
  *  Контур позиции: гистерезис + трапецеидальный профиль + ПИД слежения
  * ====================================================================== */
 
-/** Один шаг контура позиции, вызывается изнутри обработчика телеметрии на
- *  каждый приход STATUS_4, пока s->state == VESC_SERVO_STATE_READY.
+/**
+ * @brief   Один шаг контура позиции (гистерезис + трапецеидальный профиль + ПИД).
+ *
+ *          Вызывается изнутри обработчика телеметрии на каждый приход STATUS_4, пока
+ *          s->state == VESC_SERVO_STATE_READY.
  *
  *  Сначала гистерезис по КОНЕЧНОЙ ошибке (target_deg минус факт) решает,
  *  активна ли сейчас коррекция (s->moving):
@@ -365,7 +440,10 @@ static void vesc_servo_homing_step(VESC_Servo_Handle_t *s)
  *  @note  dt_s приходит сюда уже проверенным вызывающей стороной
  *         (vesc_servo_telemetry_handler) - гарантированно 0 < dt_s <=
  *         max_step_dt_ms/1000; более длинный разрыв обрабатывается ДО
- *         вызова этой функции (см. max_step_dt_ms в vesc_servo.h). */
+ *         вызова этой функции (см. max_step_dt_ms в vesc_servo.h).
+ * @param   s     серва
+ * @param   dt_s  время с прошлого прихода STATUS_4, секунды
+ */
 static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
 {
     float actual  = vesc_servo_output_deg(s);
@@ -477,7 +555,9 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
  * ====================================================================== */
 
 /**
- * @brief  Единственный обработчик телеметрии вески, регистрируется на
+ * @brief  Единственный обработчик телеметрии вески.
+ *
+ *         Регистрируется на
  *         веску сервы внутри VESC_Servo_Init() через
  *         VESC_CAN_SetTelemetryCallback(). Вызывается motor_vesc из
  *         прерывания приёма CAN на КАЖДЫЙ распознанный статусный пакет.
@@ -581,13 +661,19 @@ static void vesc_servo_telemetry_handler(VESC_Handle_t *h, VESC_CAN_PacketId_t s
  *  Публичный API - регистрация и опрос состояния
  * ====================================================================== */
 
-/** Регистрирует веску (шина + CAN ID + число полюсов из конфига) через
- *  VESC_CAN_Init() нижележащей библиотеки, затем регистрирует серву поверх
- *  неё, подставляя разумные значения по умолчанию для необязательных
- *  нулевых полей (telemetry_timeout_ms, homing_timeout_ms), строго
- *  валидируя остальные, и подписывается на телеметрию вески (см.
- *  предупреждение о единственном слоте под колбэк в vesc_servo.h).
- *  Подробности - см. vesc_servo.h. */
+/**
+ * @brief   Регистрирует веску и серву поверх неё по заданному конфигу.
+ *
+ *          Регистрирует веску (шина + CAN ID + число полюсов из конфига) через
+ *          VESC_CAN_Init() нижележащей библиотеки, затем регистрирует серву поверх
+ *          неё, подставляя разумные значения по умолчанию для необязательных нулевых
+ *          полей (telemetry_timeout_ms, homing_timeout_ms), строго валидируя
+ *          остальные, и подписывается на телеметрию вески (см. предупреждение о
+ *          единственном слоте под колбэк в vesc_servo.h). Подробности - см. vesc_servo.h.
+ * @param   config  конфигурация сервы (копируется внутрь, указатель не сохраняется)
+ * @return  Хэндл зарегистрированной сервы, либо NULL при ошибке конфигурации,
+ *          исчерпанном пуле серв или ошибке нижележащей motor_vesc.
+ */
 VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
 {
     if (config == NULL)
@@ -732,8 +818,11 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
     return s;
 }
 
-/** Возвращает текущий угол выходного вала (см. подробности в .h про
- *  достоверность до хоуминга). */
+/**
+ * @brief   Возвращает текущий угол выходного вала (см. в .h про достоверность до хоуминга).
+ * @param   s  серва
+ * @return  Угол выходного вала, градусы; 0.0f если s == NULL.
+ */
 float VESC_Servo_GetPositionDeg(VESC_Servo_Handle_t *s)
 {
     if (s == NULL)
@@ -743,26 +832,42 @@ float VESC_Servo_GetPositionDeg(VESC_Servo_Handle_t *s)
     return vesc_servo_output_deg(s);
 }
 
-/** Возвращает текущую заданную конечную цель. */
+/**
+ * @brief   Возвращает текущую заданную конечную цель.
+ * @param   s  серва
+ * @return  Цель, градусы выходного вала; 0.0f если s == NULL.
+ */
 float VESC_Servo_GetTargetDeg(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->target_deg : 0.0f;
 }
 
-/** Возвращает &s->telemetry (см. пояснение в vesc_servo.h). */
+/**
+ * @brief   Возвращает указатель на снимок телеметрии сервы (см. vesc_servo.h).
+ * @param   s  серва
+ * @return  &s->telemetry, либо NULL если s == NULL.
+ */
 const VESC_Servo_Telemetry_t *VESC_Servo_GetTelemetry(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? &s->telemetry : NULL;
 }
 
-/** 1, если хоуминг/калибровка когда-либо успешно завершались. */
+/**
+ * @brief   Проверяет, завершались ли когда-либо успешно хоуминг/калибровка.
+ * @param   s  серва
+ * @return  1, если да, иначе 0.
+ */
 uint8_t VESC_Servo_IsHomed(VESC_Servo_Handle_t *s)
 {
     return ((s != NULL) && (s->homing_state == VESC_SERVO_HOMING_DONE)) ? 1U : 0U;
 }
 
-/** 1, если серва READY и гистерезис сейчас не считает нужным корректировать
- *  позицию (см. s->moving/error_stop_deg). */
+/**
+ * @brief   Проверяет, что серва READY и коррекция позиции сейчас не активна
+ *          (см. s->moving/error_stop_deg).
+ * @param   s  серва
+ * @return  1, если да, иначе 0.
+ */
 uint8_t VESC_Servo_IsAtTarget(VESC_Servo_Handle_t *s)
 {
     if ((s == NULL) || (s->state != VESC_SERVO_STATE_READY))
@@ -772,19 +877,31 @@ uint8_t VESC_Servo_IsAtTarget(VESC_Servo_Handle_t *s)
     return (uint8_t)(s->moving == 0U);
 }
 
-/** Возвращает общее состояние сервы. */
+/**
+ * @brief   Возвращает общее состояние сервы.
+ * @param   s  серва
+ * @return  Текущее состояние; VESC_SERVO_STATE_DISABLED если s == NULL.
+ */
 VESC_Servo_State_t VESC_Servo_GetState(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->state : VESC_SERVO_STATE_DISABLED;
 }
 
-/** Возвращает текущий/последний этап хоуминга. */
+/**
+ * @brief   Возвращает текущий/последний этап хоуминга.
+ * @param   s  серва
+ * @return  Этап хоуминга; VESC_SERVO_HOMING_IDLE если s == NULL.
+ */
 VESC_Servo_HomingState_t VESC_Servo_GetHomingState(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->homing_state : VESC_SERVO_HOMING_IDLE;
 }
 
-/** Публичная обёртка над vesc_servo_read_limit() для внешней диагностики. */
+/**
+ * @brief   Публичная обёртка над vesc_servo_read_limit() для внешней диагностики.
+ * @param   s  серва
+ * @return  1, если концевик нажат, иначе 0.
+ */
 uint8_t VESC_Servo_ReadLimitSwitch(VESC_Servo_Handle_t *s)
 {
     if (s == NULL)
@@ -794,25 +911,41 @@ uint8_t VESC_Servo_ReadLimitSwitch(VESC_Servo_Handle_t *s)
     return vesc_servo_read_limit(s);
 }
 
-/** Возвращает нижнюю границу зоны лимитов из конфига. */
+/**
+ * @brief   Возвращает нижнюю границу зоны лимитов из конфига.
+ * @param   s  серва
+ * @return  limit_min_deg; 0.0f если s == NULL.
+ */
 float VESC_Servo_GetLimitMinDeg(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->cfg.limit_min_deg : 0.0f;
 }
 
-/** Возвращает верхнюю границу зоны лимитов из конфига. */
+/**
+ * @brief   Возвращает верхнюю границу зоны лимитов из конфига.
+ * @param   s  серва
+ * @return  limit_max_deg; 0.0f если s == NULL.
+ */
 float VESC_Servo_GetLimitMaxDeg(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->cfg.limit_max_deg : 0.0f;
 }
 
-/** Возвращает нижнюю границу рабочего диапазона из конфига. */
+/**
+ * @brief   Возвращает нижнюю границу рабочего диапазона из конфига.
+ * @param   s  серва
+ * @return  working_min_deg; 0.0f если s == NULL.
+ */
 float VESC_Servo_GetWorkingMinDeg(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->cfg.working_min_deg : 0.0f;
 }
 
-/** Возвращает верхнюю границу рабочего диапазона из конфига. */
+/**
+ * @brief   Возвращает верхнюю границу рабочего диапазона из конфига.
+ * @param   s  серва
+ * @return  working_max_deg; 0.0f если s == NULL.
+ */
 float VESC_Servo_GetWorkingMaxDeg(VESC_Servo_Handle_t *s)
 {
     return (s != NULL) ? s->cfg.working_max_deg : 0.0f;
@@ -822,12 +955,18 @@ float VESC_Servo_GetWorkingMaxDeg(VESC_Servo_Handle_t *s)
  *  Публичный API - управление
  * ====================================================================== */
 
-/** Запускает процедуру хоуминга: проверяет концевик прямо сейчас (по
- *  телеметрии кастомного статуса вески) и, в зависимости от того, нажат
- *  ли он уже, стартует сразу с этапа BACKOFF (концевик изначально нажат -
- *  едем прочь от него) либо с этапа SEEK (концевик отпущен - сперва едем
- *  к нему); дальше процедура продвигается сама по приходу STATUS_4 (см.
- *  vesc_servo_telemetry_handler). Подробности - см. vesc_servo.h. */
+/**
+ * @brief   Запускает процедуру хоуминга.
+ *
+ *          Проверяет концевик прямо сейчас и, в зависимости от того, нажат ли он уже,
+ *          стартует сразу с этапа BACKOFF (концевик изначально нажат - едем прочь от
+ *          него) либо с этапа SEEK (концевик отпущен - сперва едем к нему); дальше
+ *          процедура продвигается сама по приходу STATUS_4 (см.
+ *          vesc_servo_telemetry_handler). Подробности - см. vesc_servo.h.
+ * @param   s  серва
+ * @return  HAL_OK при успешном запуске, HAL_ERROR если s == NULL или телеметрия
+ *          (STATUS_4/STATUS_7) не свежая.
+ */
 HAL_StatusTypeDef VESC_Servo_StartHoming(VESC_Servo_Handle_t *s)
 {
     if (s == NULL)
@@ -862,12 +1001,19 @@ HAL_StatusTypeDef VESC_Servo_StartHoming(VESC_Servo_Handle_t *s)
     return HAL_OK;
 }
 
-/** Задаёт новую конечную цель контура позиции, обрезая её по зоне лимитов
- *  (см. vesc_servo_set_target/vesc_servo_clamp_to_limits). Профиль и
- *  гистерезис НЕ сбрасываются принудительно - если серва уже едет
- *  (s->moving == 1), она продолжает движение от текущей позиции профиля к
- *  новой цели без рывка; если стоит (s->moving == 0), запуск коррекции к
- *  новой цели решится гистерезисом на следующем приходе STATUS_4. */
+/**
+ * @brief   Задаёт новую конечную цель контура позиции.
+ *
+ *          Обрезает цель по зоне лимитов (см. vesc_servo_clamp_to_limits). Профиль и
+ *          гистерезис НЕ сбрасываются принудительно - если серва уже едет
+ *          (s->moving == 1), она продолжает движение от текущей позиции профиля к
+ *          новой цели без рывка; если стоит, запуск коррекции решится гистерезисом на
+ *          следующем приходе STATUS_4.
+ * @param   s           серва
+ * @param   target_deg  новая цель, градусы выходного вала
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL, серва не READY или target_deg
+ *          не конечен.
+ */
 HAL_StatusTypeDef VESC_Servo_SetPosition(VESC_Servo_Handle_t *s, float target_deg)
 {
     if (s == NULL)
@@ -877,12 +1023,18 @@ HAL_StatusTypeDef VESC_Servo_SetPosition(VESC_Servo_Handle_t *s, float target_de
     return vesc_servo_set_target(s, target_deg);
 }
 
-/** Задаёт цель в нормализованном виде (-1.0..1.0 относительно рабочего
- *  диапазона working_min_deg/working_max_deg), переводит в градусы и
- *  делегирует в vesc_servo_set_target() (та же обрезка по зоне лимитов,
- *  что и у VESC_Servo_SetPosition()). Значения вне -1.0..1.0 линейно
- *  экстраполируются относительно рабочего диапазона - см. подробности в
- *  vesc_servo.h. */
+/**
+ * @brief   Задаёт цель в нормализованном виде относительно рабочего диапазона.
+ *
+ *          Переводит normalized (-1.0..1.0 относительно working_min_deg/
+ *          working_max_deg) в градусы и делегирует в vesc_servo_set_target() (та же
+ *          обрезка по зоне лимитов, что и у VESC_Servo_SetPosition()). Значения вне
+ *          -1.0..1.0 линейно экстраполируются - см. подробности в vesc_servo.h.
+ * @param   s           серва
+ * @param   normalized  нормализованная цель, обычно -1.0..1.0
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL, серва не READY или итоговый
+ *          угол не конечен.
+ */
 HAL_StatusTypeDef VESC_Servo_SetPositionNormalized(VESC_Servo_Handle_t *s, float normalized)
 {
     if (s == NULL)
@@ -896,10 +1048,18 @@ HAL_StatusTypeDef VESC_Servo_SetPositionNormalized(VESC_Servo_Handle_t *s, float
     return vesc_servo_set_target(s, mid + (normalized * half));
 }
 
-/** Ручная калибровка "на лету": пересчитывает output_offset_deg так, чтобы
- *  текущий угол выходного вала стал равен actual_position_deg, сбрасывает
- *  профиль/ПИД/гистерезис на эту же точку и переводит серву в READY с
- *  хоумингом, засчитанным как пройденный. Подробности - см. vesc_servo.h. */
+/**
+ * @brief   Ручная калибровка "на лету" без прохождения хоуминга.
+ *
+ *          Пересчитывает output_offset_deg так, чтобы текущий угол выходного вала
+ *          стал равен actual_position_deg, сбрасывает профиль/ПИД/гистерезис на эту
+ *          же точку и переводит серву в READY с хоумингом, засчитанным как пройденный.
+ *          Подробности - см. vesc_servo.h.
+ * @param   s                     серва
+ * @param   actual_position_deg   фактический угол выходного вала прямо сейчас, градусы
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL, значение не конечно или ещё
+ *          нет ни одного отсчёта телеметрии.
+ */
 HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float actual_position_deg)
 {
     if (s == NULL)
@@ -933,13 +1093,19 @@ HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float ac
     return HAL_OK;
 }
 
-/** Включает контур позиции без повторного хоуминга, продолжая от текущей
- *  фактической позиции (профиль/цель сбрасываются на неё же - рывка не
- *  будет). Если за время VESC_SERVO_STATE_DISABLED вал свободно провернулся
- *  и фактический угол оказался за зоной лимитов - цель обрезается по зоне
- *  лимитов (см. vesc_servo_clamp_to_limits), и коррекция активируется
- *  немедленно (см. beyond_limits в vesc_servo_position_step), а не остаётся
- *  стоять снаружи; иначе коррекция изначально не активна. */
+/**
+ * @brief   Включает контур позиции без повторного хоуминга.
+ *
+ *          Продолжает от текущей фактической позиции (профиль/цель сбрасываются на
+ *          неё же - рывка не будет). Если за время VESC_SERVO_STATE_DISABLED вал
+ *          свободно провернулся и фактический угол оказался за зоной лимитов - цель
+ *          обрезается по зоне лимитов, и коррекция активируется немедленно (см.
+ *          beyond_limits в vesc_servo_position_step); иначе коррекция изначально не
+ *          активна.
+ * @param   s  серва
+ * @return  HAL_OK при успехе (в т.ч. если уже была READY), HAL_ERROR если s == NULL,
+ *          хоуминг/калибровка ни разу не выполнялись или телеметрия не свежая.
+ */
 HAL_StatusTypeDef VESC_Servo_Enable(VESC_Servo_Handle_t *s)
 {
     if (s == NULL)
@@ -974,13 +1140,16 @@ HAL_StatusTypeDef VESC_Servo_Enable(VESC_Servo_Handle_t *s)
     return HAL_OK;
 }
 
-/** Немедленно останавливает мотор и переводит серву в DISABLED. Прошедший
- *  ранее хоуминг не сбрасывается. Разворачивание угла мотора продолжает
- *  работать (обработчик телеметрии по-прежнему подписан и вызывается). Если
- *  вызвана посреди HOMING - процедура прерывается и засчитывается как
- *  неудавшаяся (см. VESC_SERVO_HOMING_FAILED), а не остаётся зависшей на
- *  SEEK/BACKOFF (значения, документированные как валидные только пока
- *  GetState() == HOMING). */
+/**
+ * @brief   Немедленно останавливает мотор и переводит серву в DISABLED.
+ *
+ *          Прошедший ранее хоуминг не сбрасывается. Разворачивание угла мотора
+ *          продолжает работать (обработчик телеметрии по-прежнему подписан). Если
+ *          вызвана посреди HOMING - процедура прерывается и засчитывается как
+ *          неудавшаяся (см. VESC_SERVO_HOMING_FAILED).
+ * @param   s  серва
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL.
+ */
 HAL_StatusTypeDef VESC_Servo_Disable(VESC_Servo_Handle_t *s)
 {
     if (s == NULL)
@@ -998,9 +1167,15 @@ HAL_StatusTypeDef VESC_Servo_Disable(VESC_Servo_Handle_t *s)
     return HAL_OK;
 }
 
-/** Переключатель "тормозить ли в цели" - см. подробности в vesc_servo.h.
- *  Само значение силы тормоза (brake_at_target_fraction) берётся из
- *  конфига сервы и здесь не меняется. */
+/**
+ * @brief   Переключатель "тормозить ли в цели" (см. подробности в vesc_servo.h).
+ *
+ *          Само значение силы тормоза (brake_at_target_fraction) берётся из конфига
+ *          сервы и здесь не меняется.
+ * @param   s        серва
+ * @param   enabled  0 - выключить тормоз в цели, иначе - включить
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL.
+ */
 HAL_StatusTypeDef VESC_Servo_SetBrakeAtTarget(VESC_Servo_Handle_t *s, uint8_t enabled)
 {
     if (s == NULL)
@@ -1011,9 +1186,14 @@ HAL_StatusTypeDef VESC_Servo_SetBrakeAtTarget(VESC_Servo_Handle_t *s, uint8_t en
     return HAL_OK;
 }
 
-/** Задаёт (или снимает, если callback == NULL) обработчик, ретранслируемый
- *  из vesc_servo_telemetry_handler() на каждый принятый статусный пакет -
- *  см. подробности в vesc_servo.h. */
+/**
+ * @brief   Задаёт (или снимает, если callback == NULL) пользовательский колбэк
+ *          телеметрии сервы (см. подробности в vesc_servo.h).
+ * @param   s         серва
+ * @param   callback  функция, вызываемая на каждый принятый статусный пакет,
+ *                     либо NULL чтобы снять колбэк
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL.
+ */
 HAL_StatusTypeDef VESC_Servo_SetTelemetryCallback(VESC_Servo_Handle_t *s, VESC_Servo_TelemetryCallback_t callback)
 {
     if (s == NULL)
@@ -1024,12 +1204,16 @@ HAL_StatusTypeDef VESC_Servo_SetTelemetryCallback(VESC_Servo_Handle_t *s, VESC_S
     return HAL_OK;
 }
 
-/** Необязательная диагностика полной потери связи (см. подробности и
- *  предупреждение о пределах событийной модели в vesc_servo.h) - на сам
- *  контур позиции не влияет (он и так продвигается по приходу телеметрии),
- *  нужна только для того, чтобы VESC_Servo_GetState() отражал полную
- *  тишину на шине, которую сам обработчик телеметрии заметить не может по
- *  определению (он вызывается только когда пакет ДЕЙСТВИТЕЛЬНО пришёл). */
+/**
+ * @brief   Необязательная диагностика полной потери связи (см. предупреждение о
+ *          пределах событийной модели в vesc_servo.h).
+ *
+ *          На сам контур позиции не влияет (он и так продвигается по приходу
+ *          телеметрии), нужна только для того, чтобы VESC_Servo_GetState() отражал
+ *          полную тишину на шине, которую сам обработчик телеметрии заметить не
+ *          может по определению.
+ * @param   s  серва
+ */
 void VESC_Servo_CheckAlive(VESC_Servo_Handle_t *s)
 {
     if (s == NULL)
