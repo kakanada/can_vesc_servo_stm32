@@ -4,8 +4,8 @@
  * @brief   Реализация сервослоя поверх motor_vesc. См. vesc_servo.h.
  *
  * @author  Mechanic
- * @date    25.09.2026
- * @version 1.5
+ * @date    26.09.2026
+ * @version 1.6
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
  *            распространения - см. LICENSE / README.md в составе проекта.
@@ -195,6 +195,32 @@ static void vesc_servo_reset_tracking(VESC_Servo_Handle_t *s, float pos)
 }
 
 /**
+ * @brief   Общий финальный шаг любой калибровки нуля - переводит серву в READY.
+ *
+ *          Единая точка для хоуминга по концевику (vesc_servo_homing_finish),
+ *          VESC_Servo_SetCurrentPosition() и автоматических режимов homing_mode (см.
+ *          vesc_servo_apply_homing_mode) - останавливает мотор, обрезает цель по зоне
+ *          лимитов, сразу считает серву "едущей", если факт. угол оказался снаружи
+ *          зоны, и сбрасывает профиль/ПИД на эту же точку. НЕ трогает
+ *          output_offset_deg - вызывающая сторона обязана выставить его сама ДО
+ *          вызова (либо намеренно оставить как есть - см. TRUST_ABSOLUTE).
+ * @param   s                    серва
+ * @param   actual_position_deg  факт. угол выходного вала ПРЯМО СЕЙЧАС (уже с учётом
+ *                                выставленного offset), градусы
+ */
+static void vesc_servo_finish_calibration(VESC_Servo_Handle_t *s, float actual_position_deg)
+{
+    vesc_servo_stop_motor(s);
+
+    s->target_deg = vesc_servo_clamp_to_limits(s, actual_position_deg);
+    s->moving      = vesc_servo_beyond_limits(s, actual_position_deg);
+    vesc_servo_reset_tracking(s, actual_position_deg);
+
+    s->homing_state = VESC_SERVO_HOMING_DONE;
+    s->state         = VESC_SERVO_STATE_READY;
+}
+
+/**
  * @brief   Проверяет свежесть телеметрии STATUS_4 ("тика" контура).
  *
  *          В отличие от VESC_CAN_IsAlive() из motor_vesc, который считает "живым"
@@ -320,16 +346,8 @@ static void vesc_servo_update_wrap_tracking(VESC_Servo_Handle_t *s)
  */
 static void vesc_servo_homing_finish(VESC_Servo_Handle_t *s)
 {
-    vesc_servo_stop_motor(s);
-
     s->output_offset_deg = s->cfg.home_position_deg - (s->motor_unwrapped_deg * s->inv_gear_ratio);
-
-    s->target_deg = vesc_servo_clamp_to_limits(s, s->cfg.home_position_deg);
-    s->moving      = 0U;
-    vesc_servo_reset_tracking(s, s->cfg.home_position_deg);
-
-    s->homing_state = VESC_SERVO_HOMING_DONE;
-    s->state        = VESC_SERVO_STATE_READY;
+    vesc_servo_finish_calibration(s, s->cfg.home_position_deg);
     VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_HOMING_DONE, s->cfg.vesc_id, 0);
 }
 
@@ -548,6 +566,48 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
     vesc_servo_send_motor_speed(s, command_v);
 }
 
+/**
+ * @brief   Применяет автоматические режимы homing_mode (см. VESC_Servo_HomingMode_t в
+ *          vesc_servo.h) - вызывается РОВНО ОДИН РАЗ, на самой первой телеметрии
+ *          STATUS_4 после VESC_Servo_Init() (см. использование в
+ *          vesc_servo_telemetry_handler). В момент вызова motor_unwrapped_deg ещё
+ *          0.0 (первая точка отсчёта unwrap только что сохранена в
+ *          last_raw_pid_pos_deg, см. vesc_servo_update_wrap_tracking).
+ *
+ *          Для REQUIRED/MANUAL_EXTERNAL ничего не делает - серва остаётся DISABLED,
+ *          как и раньше, до явного вызова VESC_Servo_StartHoming()/
+ *          SetCurrentPosition() пользователем.
+ * @param   s  серва
+ */
+static void vesc_servo_apply_homing_mode(VESC_Servo_Handle_t *s)
+{
+    switch (s->cfg.homing_mode)
+    {
+        case VESC_SERVO_HOMING_MODE_ZERO_AT_BOOT:
+            /* Та же точка выхода, что и у успешного хоуминга по концевику - раз
+             * motor_unwrapped_deg сейчас 0.0, итоговый offset получится равным просто
+             * home_position_deg (см. vesc_servo_homing_finish). */
+            vesc_servo_homing_finish(s);
+            break;
+
+        case VESC_SERVO_HOMING_MODE_TRUST_ABSOLUTE:
+            /* НИКАКОЙ коррекции - output_offset_deg остаётся 0.0 (значение по
+             * умолчанию с VESC_Servo_Init()). Вместо этого точка отсчёта unwrap
+             * выставляется в само сырое значение (а не в 0.0, как в обычном случае) -
+             * тогда итоговый угол получается напрямую raw/gear_ratio, ровно то, что
+             * прислала веска, без какой-либо собственной поправки. */
+            s->motor_unwrapped_deg = s->last_raw_pid_pos_deg;
+            vesc_servo_finish_calibration(s, vesc_servo_output_deg(s));
+            VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_HOMING_DONE, s->cfg.vesc_id, 0);
+            break;
+
+        case VESC_SERVO_HOMING_MODE_REQUIRED:
+        case VESC_SERVO_HOMING_MODE_MANUAL_EXTERNAL:
+        default:
+            break; /* ждём явного вызова пользователя - см. .h */
+    }
+}
+
 /* ========================================================================
  *  Обработчик телеметрии - "сердце" событийной модели (см. motor_vesc.h,
  *  VESC_TelemetryCallback_t / VESC_CAN_SetTelemetryCallback), и точка
@@ -572,7 +632,11 @@ static void vesc_servo_position_step(VESC_Servo_Handle_t *s, float dt_s)
  *              Если разрыв не длиннее max_step_dt_ms (штатный тик, либо
  *              первый приход вообще) - обновляет разворачивание угла мотора
  *              и, в зависимости от состояния сервы, продвигает либо
- *              процедуру хоуминга, либо контур позиции. Если разрыв длиннее
+ *              процедуру хоуминга, либо контур позиции. На самом первом
+ *              приходе STATUS_4 за всё время - дополнительно применяет
+ *              автоматические режимы homing_mode (см.
+ *              vesc_servo_apply_homing_mode и VESC_Servo_HomingMode_t в
+ *              vesc_servo.h). Если разрыв длиннее
  *              (см. max_step_dt_ms в vesc_servo.h) - НЕ пытается протащить
  *              через него дельту разворачивания угла (переанкерует точку
  *              отсчёта вместо этого) и, если серва была READY/HOMING,
@@ -625,6 +689,15 @@ static void vesc_servo_telemetry_handler(VESC_Handle_t *h, VESC_CAN_PacketId_t s
         else
         {
             vesc_servo_update_wrap_tracking(s);
+
+            if (!had_tick)
+            {
+                /* Самая первая телеметрия этой сервы за всё время - применяем
+                 * автоматические режимы homing_mode (см. vesc_servo_apply_homing_mode
+                 * и VESC_Servo_HomingMode_t в vesc_servo.h). Для REQUIRED/
+                 * MANUAL_EXTERNAL это no-op. */
+                vesc_servo_apply_homing_mode(s);
+            }
 
             if (had_tick && (dt_s > 0.0f)) /* не первый тик и не дублирующий приход в тот же HAL_GetTick() */
             {
@@ -744,6 +817,14 @@ VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config)
     {
         VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 9);
         return NULL; /* точка хоуминга обязана лежать внутри зоны лимитов */
+    }
+    if ((config->homing_mode != VESC_SERVO_HOMING_MODE_REQUIRED)
+        && (config->homing_mode != VESC_SERVO_HOMING_MODE_ZERO_AT_BOOT)
+        && (config->homing_mode != VESC_SERVO_HOMING_MODE_MANUAL_EXTERNAL)
+        && (config->homing_mode != VESC_SERVO_HOMING_MODE_TRUST_ABSOLUTE))
+    {
+        VESC_SERVO_LOG(LOG_CODE_VESC_SERVO_INIT_BAD_CONFIG, config->vesc_id, 10);
+        return NULL; /* неизвестное значение homing_mode - см. VESC_Servo_HomingMode_t */
     }
 
     /* Слот пула серв резервируем ДО регистрации вески в motor_vesc -
@@ -1075,41 +1156,14 @@ HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float ac
         return HAL_ERROR; /* ещё нет ни одного отсчёта телеметрии - не от чего считать офсет */
     }
 
-    /* Если серва до этого что-то активно делала (HOMING, либо READY с
-     * активной коррекцией) - останавливаем мотор, а не оставляем предыдущую
-     * команду исполняться до следующего тика. */
-    vesc_servo_stop_motor(s);
-
     s->output_offset_deg = actual_position_deg - (s->motor_unwrapped_deg * s->inv_gear_ratio);
-
-    s->target_deg = vesc_servo_clamp_to_limits(s, actual_position_deg);
-    s->moving      = vesc_servo_beyond_limits(s, actual_position_deg); /* см. beyond_limits в vesc_servo_position_step */
-    vesc_servo_reset_tracking(s, actual_position_deg);
-
-    s->homing_state = VESC_SERVO_HOMING_DONE;
-    s->state         = VESC_SERVO_STATE_READY;
+    /* Если серва до этого что-то активно делала (HOMING, либо READY с активной
+     * коррекцией) - vesc_servo_finish_calibration() останавливает мотор, а не
+     * оставляет предыдущую команду исполняться до следующего тика. */
+    vesc_servo_finish_calibration(s, actual_position_deg);
 
     vesc_servo_refresh_telemetry(s);
     return HAL_OK;
-}
-
-/**
- * @brief   Пропускает физический хоуминг - текущий угол становится home_position_deg.
- *
- *          Тонкая обёртка над VESC_Servo_SetCurrentPosition(s, cfg.home_position_deg) -
- *          подробности и ограничения (в т.ч. почему это безопасно при перезапуске
- *          STM32, но не заменяет физическую повторяемость концевика) - см. vesc_servo.h.
- * @param   s  серва
- * @return  HAL_OK при успехе, HAL_ERROR если s == NULL или ещё нет ни одного отсчёта
- *          телеметрии.
- */
-HAL_StatusTypeDef VESC_Servo_SkipHoming(VESC_Servo_Handle_t *s)
-{
-    if (s == NULL)
-    {
-        return HAL_ERROR;
-    }
-    return VESC_Servo_SetCurrentPosition(s, s->cfg.home_position_deg);
 }
 
 /**

@@ -59,9 +59,12 @@ void VESC_Servo_Example_BusSetup(void)
 /**
  * @brief  Регистрирует серву - VESC_Servo_Init() сама создаёт веску внутри
  *         себя (шина + CAN ID + число полюсов - прямо в конфиге) и сама
- *         подписывается на её телеметрию. Хоуминг не запускает - это
- *         делает отдельно VESC_Servo_Example_StartHoming() ниже, когда вы
- *         сами решите, что пора (см. пояснение в шапке файла).
+ *         подписывается на её телеметрию. В этом примере выбран классический
+ *         режим homing_mode = VESC_SERVO_HOMING_MODE_REQUIRED - явный
+ *         хоуминг делает отдельно VESC_Servo_Example_StartHoming() ниже,
+ *         когда вы сами решите, что пора. Три других режима (в т.ч. без
+ *         физического хоуминга вообще) - см. VESC_Servo_HomingMode_t в
+ *         vesc_servo.h и комментарий у servo_cfg.homing_mode ниже.
  */
 void VESC_Servo_Example_Setup(void)
 {
@@ -100,10 +103,26 @@ void VESC_Servo_Example_Setup(void)
     servo_cfg.working_min_deg =  -90.0f; /* -1.0 в SetPositionNormalized() */
     servo_cfg.working_max_deg =   90.0f; /* +1.0 в SetPositionNormalized() */
 
+    /* --- Способ определения нуля - см. VESC_Servo_HomingMode_t в vesc_servo.h:
+     *   REQUIRED        - как здесь: ничего само не происходит, хоуминг по
+     *                      концевику запускаете сами (см. пункт 2 ниже);
+     *   ZERO_AT_BOOT     - без концевика вообще: где вал стоял при включении,
+     *                      то и ноль (home_position_deg), серва сама готова
+     *                      сразу после первой телеметрии;
+     *   MANUAL_EXTERNAL  - как REQUIRED, но вместо StartHoming() вы вызываете
+     *                      VESC_Servo_SetCurrentPosition() с углом от своего
+     *                      внешнего датчика;
+     *   TRUST_ABSOLUTE   - без концевика: угол, который веска шлёт при первой
+     *                      телеметрии, принимается КАК ЕСТЬ, без коррекции -
+     *                      для мотора с абсолютным энкодером, откалиброванным
+     *                      при сборке. --- */
+    servo_cfg.homing_mode = VESC_SERVO_HOMING_MODE_REQUIRED;
+
     /* --- Концевик - кастомный статус самой вески (byte[1] STATUS_7, см.
      * motor_vesc.h): у нашего физического концевика "нажато" соответствует
      * VESC_CUSTOM_SENSOR_PIN_SET (зависит от того, как разведён датчик -
-     * подберите под свою схему). --- */
+     * подберите под свою схему). Используется VESC_Servo_StartHoming()
+     * независимо от homing_mode. --- */
     servo_cfg.limit_switch_pressed_state = VESC_CUSTOM_SENSOR_PIN_SET;
 
     servo_cfg.homing_seek_speed_deg_s    =  15.0f; /* едем К концевику   */
@@ -142,22 +161,10 @@ uint8_t VESC_Servo_Example_StartHoming(void)
     return (VESC_Servo_StartHoming(g_wheel_servo) == HAL_OK) ? 1U : 0U;
 }
 
-/**
- * @brief  Альтернатива VESC_Servo_Example_StartHoming() выше - ВМЕСТО, а не
- *         вместе с ней: без выезда к концевику, угол, который веска отдаёт
- *         прямо сейчас, становится home_position_deg. Годится, если ваша
- *         веска/мотор сохраняют собственное представление об угле (абсолютный
- *         энкодер/датчики Холла) независимо от перезапуска STM32 - тогда эту
- *         функцию достаточно вызывать один раз на каждом старте, сразу как
- *         пошла первая телеметрия, без внешней энергонезависимой памяти для
- *         офсета. Подробности и ограничения (нет физической повторяемости
- *         нуля, если вал сместился без питания) - см. vesc_servo.h.
- * @retval 1 - принято; 0 - не готова (телеметрия ещё ни разу не приходила).
- */
-uint8_t VESC_Servo_Example_SkipHoming(void)
-{
-    return (VESC_Servo_SkipHoming(g_wheel_servo) == HAL_OK) ? 1U : 0U;
-}
+/* В этом примере используется homing_mode = REQUIRED (см. пункт 1 выше), поэтому
+ * функция выше нужна. Для ZERO_AT_BOOT/TRUST_ABSOLUTE этот шаг вообще не нужен -
+ * серва сама переходит в READY на первой телеметрии, без единого вызова с вашей
+ * стороны - просто поменяйте servo_cfg.homing_mode в VESC_Servo_Example_Setup(). */
 
 /* ------------------------------------------------------------------------ */
 /*  3. Задание цели - вызывать когда угодно, по мере расчёта нового угла    */
