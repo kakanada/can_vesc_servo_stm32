@@ -5,8 +5,8 @@
  *          управляемую по CAN, в позиционный привод (серву) с редуктором.
  *          Архитектура, пример, предупреждения - см. README.md/API_REFERENCE.md.
  * @author  Mechanic
- * @date    20.09.2026
- * @version 1.4
+ * @date    25.09.2026
+ * @version 1.5
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
  *            распространения - см. LICENSE / README.md в составе проекта.
@@ -63,7 +63,8 @@ typedef enum
                                      *   разрыва позиция более не достоверна.
                                      *   Мотору отправлена команда Brake=0.
                                      *   Выход - VESC_Servo_StartHoming(),
-                                     *   VESC_Servo_SetCurrentPosition(), либо
+                                     *   VESC_Servo_SetCurrentPosition(),
+                                     *   VESC_Servo_SkipHoming(), либо
                                      *   VESC_Servo_Enable() (только если
                                      *   хоуминг ранее завершался успешно и
                                      *   телеметрия уже снова свежая). */
@@ -492,8 +493,9 @@ struct VESC_Servo_Handle_s
  *           - home_position_deg вне диапазона [limit_min_deg, limit_max_deg];
  *           - исчерпан VESC_SERVO_MAX_SERVOS.
  *         Хоуминг не выполнялся (VESC_SERVO_HOMING_IDLE) - вызовите
- *         VESC_Servo_StartHoming() либо VESC_Servo_SetCurrentPosition(),
- *         прежде чем задавать позицию через VESC_Servo_SetPosition().
+ *         VESC_Servo_StartHoming(), VESC_Servo_SetCurrentPosition() либо
+ *         VESC_Servo_SkipHoming(), прежде чем задавать позицию через
+ *         VESC_Servo_SetPosition().
  */
 VESC_Servo_Handle_t *VESC_Servo_Init(const VESC_Servo_Config_t *config);
 
@@ -713,6 +715,37 @@ HAL_StatusTypeDef VESC_Servo_SetPositionNormalized(VESC_Servo_Handle_t *s, float
  *         после появления связи с веской)
  */
 HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float actual_position_deg);
+
+/**
+ * @brief  Пропускает физический хоуминг: угол, который веска отдаёт ПРЯМО СЕЙЧАС,
+ *         объявляется home_position_deg (из конфига) - без выезда к концевику.
+ *
+ *         Тонкая обёртка над VESC_Servo_SetCurrentPosition(s, cfg.home_position_deg) -
+ *         не отдельный механизм, а просто удобное имя для этого частного случая: "где
+ *         бы вал ни стоял прямо сейчас - это и есть ноль". Уместно, когда веска и
+ *         мотор физически сохраняют своё собственное представление об угле независимо
+ *         от перезапуска STM32 (например, абсолютный энкодер/датчики Холла мотора не
+ *         сбрасываются, пока веска не обесточена) - тогда вызвать эту функцию сразу
+ *         после появления первой телеметрии на каждом старте STM32 не хуже, чем
+ *         помнить offset во внешней энергонезависимой памяти между перезапусками (как
+ *         предлагает VESC_Servo_SetCurrentPosition()): опорная точка каждый раз
+ *         читается заново напрямую из вески, а не восстанавливается из чего-то
+ *         сохранённого самим модулем.
+ *
+ *         @warning Это НЕ физически воспроизводимый ноль, в отличие от
+ *         VESC_Servo_StartHoming() через концевик: если между вызовами вал реально
+ *         сместился (внешняя сила, вибрация, ручное вмешательство, пока не было
+ *         удержания тормозом) - каждый вызов задаст СВОЙ ноль, там, где вал оказался в
+ *         этот момент, без какой-либо проверки. Подходит для сценариев без строгого
+ *         требования к абсолютной повторяемости нуля между включениями (либо когда
+ *         механика гарантированно не может сместиться без питания) - если нужна
+ *         гарантированная привязка к физической точке, используйте
+ *         VESC_Servo_StartHoming().
+ * @param  s  хэндл сервы
+ * @retval HAL_OK; HAL_ERROR если s == NULL, либо ещё ни разу не приходила телеметрия
+ *         вески (та же причина, что и у VESC_Servo_SetCurrentPosition()).
+ */
+HAL_StatusTypeDef VESC_Servo_SkipHoming(VESC_Servo_Handle_t *s);
 
 /**
  * @brief  Включает контур позиции после VESC_Servo_Disable() БЕЗ повторного

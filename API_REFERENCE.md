@@ -20,6 +20,7 @@
   - [`VESC_Servo_SetPosition`](#vesc_servo_setposition)
   - [`VESC_Servo_SetPositionNormalized`](#vesc_servo_setpositionnormalized)
   - [`VESC_Servo_SetCurrentPosition`](#vesc_servo_setcurrentposition)
+  - [`VESC_Servo_SkipHoming`](#vesc_servo_skiphoming)
   - [`VESC_Servo_Enable`](#vesc_servo_enable)
   - [`VESC_Servo_Disable`](#vesc_servo_disable)
   - [`VESC_Servo_SetBrakeAtTarget`](#vesc_servo_setbrakeattarget)
@@ -49,7 +50,7 @@
 | `VESC_SERVO_STATE_DISABLED` | Контур выключен, команды на веску не шлются. Начальное состояние после `VESC_Servo_Init()`. |
 | `VESC_SERVO_STATE_HOMING` | Идёт поиск нуля, см. `VESC_Servo_HomingState_t`. |
 | `VESC_SERVO_STATE_READY` | Позиция достоверна, доступен `VESC_Servo_SetPosition()`. |
-| `VESC_SERVO_STATE_FAULT` | Хоуминг провалился по таймауту, либо `VESC_Servo_CheckAlive()` обнаружила потерю телеметрии, либо разрыв между `STATUS_4` превысил `max_step_dt_ms`. Выход — `VESC_Servo_StartHoming()`, `VESC_Servo_SetCurrentPosition()`, либо `VESC_Servo_Enable()` (только если хоуминг уже проходили и телеметрия снова свежая). |
+| `VESC_SERVO_STATE_FAULT` | Хоуминг провалился по таймауту, либо `VESC_Servo_CheckAlive()` обнаружила потерю телеметрии, либо разрыв между `STATUS_4` превысил `max_step_dt_ms`. Выход — `VESC_Servo_StartHoming()`, `VESC_Servo_SetCurrentPosition()`, `VESC_Servo_SkipHoming()`, либо `VESC_Servo_Enable()` (только если хоуминг уже проходили и телеметрия снова свежая). |
 
 ### `VESC_Servo_HomingState_t`
 
@@ -224,6 +225,29 @@ HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float ac
 
 **Возврат:** `HAL_OK`; `HAL_ERROR`, если `s == NULL`, `actual_position_deg` не конечное число, либо
 ещё ни разу не приходила телеметрия вески.
+
+### `VESC_Servo_SkipHoming`
+
+```c
+HAL_StatusTypeDef VESC_Servo_SkipHoming(VESC_Servo_Handle_t *s);
+```
+
+Пропускает физический хоуминг: угол, который веска отдаёт прямо сейчас, объявляется
+`home_position_deg` из конфига — без выезда к концевику. Тонкая обёртка над
+`VESC_Servo_SetCurrentPosition(s, cfg.home_position_deg)`, уместная, когда веска/мотор сохраняют
+своё представление об угле независимо от перезапуска STM32 (например абсолютный энкодер/датчики
+Холла мотора не сбрасываются, пока веска не обесточена) — тогда достаточно вызывать эту функцию на
+каждом старте, без внешней энергонезависимой памяти под офсет.
+
+**⚠️ Не физически воспроизводимый ноль** (в отличие от `VESC_Servo_StartHoming()` через концевик):
+если между вызовами вал реально сместился без удержания — каждый вызов задаст свой ноль там, где вал
+оказался в этот момент, без проверки. Подробности — см. `vesc_servo.h`.
+
+| Параметр | Описание |
+|---|---|
+| `s` | Хэндл сервы. |
+
+**Возврат:** `HAL_OK`; `HAL_ERROR`, если `s == NULL`, либо ещё ни разу не приходила телеметрия вески.
 
 ### `VESC_Servo_Enable`
 

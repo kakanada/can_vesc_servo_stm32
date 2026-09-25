@@ -4,8 +4,8 @@
  * @brief   Реализация сервослоя поверх motor_vesc. См. vesc_servo.h.
  *
  * @author  Mechanic
- * @date    19.09.2026
- * @version 1.4
+ * @date    25.09.2026
+ * @version 1.5
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
  *            распространения - см. LICENSE / README.md в составе проекта.
@@ -1091,6 +1091,25 @@ HAL_StatusTypeDef VESC_Servo_SetCurrentPosition(VESC_Servo_Handle_t *s, float ac
 
     vesc_servo_refresh_telemetry(s);
     return HAL_OK;
+}
+
+/**
+ * @brief   Пропускает физический хоуминг - текущий угол становится home_position_deg.
+ *
+ *          Тонкая обёртка над VESC_Servo_SetCurrentPosition(s, cfg.home_position_deg) -
+ *          подробности и ограничения (в т.ч. почему это безопасно при перезапуске
+ *          STM32, но не заменяет физическую повторяемость концевика) - см. vesc_servo.h.
+ * @param   s  серва
+ * @return  HAL_OK при успехе, HAL_ERROR если s == NULL или ещё нет ни одного отсчёта
+ *          телеметрии.
+ */
+HAL_StatusTypeDef VESC_Servo_SkipHoming(VESC_Servo_Handle_t *s)
+{
+    if (s == NULL)
+    {
+        return HAL_ERROR;
+    }
+    return VESC_Servo_SetCurrentPosition(s, s->cfg.home_position_deg);
 }
 
 /**
